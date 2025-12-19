@@ -1,327 +1,248 @@
-# VanitySearch with Steganography Mode
+# VanityMask
 
-A fork of VanitySearch with added **steganography mode** - find Bitcoin private keys where the public key X coordinate matches arbitrary bit patterns.
+Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch) with GPU-accelerated matching of custom bit patterns in public key X/Y/XY coordinates.
 
-## What's New: Steganography Mode
+VanityMask includes all original VanitySearch functionality for Bitcoin vanity address generation, plus an additional **coordinate targeting mode** for matching arbitrary bit patterns directly in secp256k1 public key coordinates.
 
-Traditional vanity search finds addresses starting with specific Base58 characters (like `1Love...`). 
+## Features
 
-**Steganography mode** operates on the raw public key, letting you:
-- Match prefixes of the X coordinate (`DEADBEEF...`)
-- Match scattered bytes anywhere (`AA__BB__CC__DD__`)
-- Match arbitrary bit patterns with custom masks
-- Embed hidden messages in public keys
+### Original VanitySearch Features
+- Generate vanity Bitcoin addresses (P2PKH, P2SH, BECH32)
+- Multi-GPU support with CUDA optimization
+- CPU parallelization with SSE SHA256/RIPEMD160
+- Split-key vanity generation for third-party searches
+- Wildcard pattern matching (`?` and `*`)
+- Case-insensitive search option
 
-### Performance
+### New: Coordinate Targeting Mode
+- Match arbitrary bit patterns in public key X, Y, or full XY coordinates
+- GPU-accelerated (~27 GKey/s on RTX 4090)
+- 3-4x faster than address mode (skips SHA256/RIPEMD160 hashing)
+- Configurable bit masks for partial matching
+- Automatic prefix-to-mask conversion
 
-| GPU | Speed |
-|-----|-------|
-| RTX 4090 | ~27 GKeys/s |
-| RTX 3080 | ~15 GKeys/s |
-| RTX 2070 | ~8 GKeys/s |
+## Performance
 
-Stego mode is **3-4x faster** than normal vanity search because it skips SHA256 and RIPEMD160 hashing.
+Coordinate targeting mode benchmarks (RTX 4090):
 
----
-
-## Building
-
-### Requirements
-
-**Both Platforms:**
-- NVIDIA GPU with Compute Capability 7.5+ (RTX 20xx or newer)
-- CUDA Toolkit 11.0+ (tested with CUDA 12/13)
-
-**Windows:**
-- Visual Studio 2019 or 2022 with "Desktop development with C++" workload
-- CUDA Toolkit with Visual Studio integration
-
-**Linux:**
-- GCC 9+ (g++)
-- Make
-- CUDA Toolkit with nvcc
-
----
-
-## Windows Build
-
-### Step 1: Install Prerequisites
-
-1. **Visual Studio 2022** (Community edition is free)
-   - Download from: https://visualstudio.microsoft.com/
-   - During install, select "Desktop development with C++"
-
-2. **CUDA Toolkit**
-   - Download from: https://developer.nvidia.com/cuda-downloads
-   - Select Windows → x86_64 → your Windows version → exe (local)
-   - Install with Visual Studio integration enabled
-
-### Step 2: Build
-
-1. Extract `VanitySearch-Stego.zip`
-2. Open `VanitySearch.sln` in Visual Studio
-3. Select **Release** and **x64** in the toolbar dropdowns
-4. Build → Build Solution (or press **F7**)
-5. Wait for build to complete (may take 1-2 minutes for CUDA compilation)
-
-### Step 3: Run
-
-```cmd
-cd x64\Release
-VanitySearch.exe -gpu -stego -tx DEADBEEF --prefix 4
-```
-
-### Troubleshooting Windows Build
-
-**"CUDA not found" errors:**
-- Ensure CUDA Toolkit is installed with VS integration
-- Restart Visual Studio after CUDA install
-
-**"Platform toolset not found":**
-- Right-click project → Properties → General → Platform Toolset
-- Select your installed version (v143 for VS 2022, v142 for VS 2019)
-
-**Linker errors about CUDA:**
-- Check Project Properties → CUDA C/C++ → Device → Code Generation
-- Should include your GPU architecture (e.g., compute_89,sm_89 for RTX 4090)
-
----
-
-## Linux Build (including WSL2)
-
-### Step 1: Install Prerequisites
-
-**Ubuntu/Debian:**
-```bash
-# Build essentials
-sudo apt update
-sudo apt install -y build-essential git
-
-# CUDA Toolkit (if not already installed)
-# Option A: From NVIDIA (recommended for latest)
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install -y cuda-toolkit-12-4
-
-# Option B: From Ubuntu repos (may be older)
-sudo apt install -y nvidia-cuda-toolkit
-```
-
-**WSL2 Specific:**
-```bash
-# WSL2 uses Windows GPU driver - just need CUDA toolkit
-# Make sure you have latest NVIDIA Windows driver installed first!
-
-# Then in WSL2:
-sudo apt update
-sudo apt install -y build-essential
-sudo apt install -y nvidia-cuda-toolkit
-# OR install from NVIDIA repos as shown above
-```
-
-### Step 2: Build
-
-```bash
-# Extract and enter directory
-unzip VanitySearch-Stego.zip
-cd VanitySearch-Stego
-
-# Check your GPU's compute capability
-nvidia-smi --query-gpu=compute_cap --format=csv
-# RTX 4090 = 8.9, RTX 3080 = 8.6, RTX 2070 = 7.5
-
-# Build for your specific GPU (fastest compile, optimized binary)
-make gpu=1 CCAP=89 -j$(nproc)    # RTX 4090
-# OR
-make gpu=1 CCAP=86 -j$(nproc)    # RTX 3080/3090
-# OR
-make gpu=1 CCAP=75 -j$(nproc)    # RTX 2070/2080
-
-# OR build for multiple architectures (slower compile, runs on any RTX)
-make gpu=1 -j$(nproc)
-```
-
-### Step 3: Run
-
-```bash
-./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4
-```
-
-### Troubleshooting Linux Build
-
-**"nvcc: command not found":**
-```bash
-# Add CUDA to PATH
-export PATH=/usr/local/cuda/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-
-# Add to ~/.bashrc to make permanent
-echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-```
-
-**"cuda_runtime.h: No such file":**
-```bash
-# Specify CUDA path explicitly
-make gpu=1 CUDA=/usr/local/cuda-12.4 CCAP=89 -j$(nproc)
-```
-
-**"unsupported GNU version" with nvcc:**
-```bash
-# Use specific GCC version
-sudo apt install g++-11
-make gpu=1 CXXCUDA=/usr/bin/g++-11 CCAP=89 -j$(nproc)
-```
-
-**WSL2: "CUDA driver version insufficient":**
-- Update your Windows NVIDIA driver to latest version
-- Restart WSL2: `wsl --shutdown` then reopen terminal
-
-**Show build configuration:**
-```bash
-make info gpu=1 CCAP=89
-```
-
----
+| Bits | Difficulty | Expected Time |
+|------|------------|---------------|
+| 32   | 2^32       | ~0.16 sec     |
+| 40   | 2^40       | ~41 sec       |
+| 48   | 2^48       | ~2.9 hours    |
+| 56   | 2^56       | ~31 days      |
 
 ## Usage
 
-### Steganography Mode
-
-#### Basic: Match X Coordinate Prefix
+### Standard Vanity Address Search
 
 ```bash
-# Match first 4 bytes (32 bits) - ~0.15 seconds
-./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4
+# Find address starting with "1Drew"
+./VanitySearch -gpu -stop 1Drew
 
-# Match first 5 bytes (40 bits) - ~40 seconds
+# Case-insensitive search
+./VanitySearch -gpu -c -stop 1drew
+
+# BECH32 address
+./VanitySearch -gpu -stop bc1qmy
+
+# Multiple prefixes from file
+./VanitySearch -gpu -stop -i prefixes.txt
+```
+
+### Coordinate Targeting Mode
+
+```bash
+# Match first 5 bytes (40 bits) of X coordinate
 ./VanitySearch -gpu -stego -tx DEADBEEFAA --prefix 5
 
-# Match first 6 bytes (48 bits) - ~3 hours
-./VanitySearch -gpu -stego -tx DEADBEEFAABB --prefix 6
+# Match with explicit mask
+./VanitySearch -gpu -stego -tx DEADBEEF00000000... -mx FFFFFFFF00000000...
+
+# Full 64-char hex target (matches specified bits only)
+./VanitySearch -gpu -stego -tx DEADBEEFAA000000000000000000000000000000000000000000000000000000 --prefix 5
 ```
 
-#### Advanced: Scattered Byte Patterns
+### Command Line Options
+
+```
+VanitySearch [-check] [-v] [-u] [-b] [-c] [-gpu] [-stop] [-i inputfile]
+             [-gpuId gpuId1[,gpuId2,...]] [-g g1x,g1y,[,g2x,g2y,...]]
+             [-o outputfile] [-m maxFound] [-ps seed] [-s seed] [-t nbThread]
+             [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]
+             [-rp privkey partialkeyfile] [prefix]
+             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]
+
+Standard options:
+  prefix          : Prefix to search (can contain wildcards '?' or '*')
+  -v              : Print version
+  -u              : Search uncompressed addresses
+  -b              : Search both uncompressed and compressed addresses
+  -c              : Case-insensitive search
+  -gpu            : Enable GPU calculation
+  -stop           : Stop when all prefixes are found
+  -i inputfile    : Get prefixes from file
+  -o outputfile   : Output results to file
+  -gpuId 0,1,...  : List of GPUs to use (default: 0)
+  -g x,y,...      : GPU grid size (default: 8*MP,128)
+  -m maxFound     : Max prefixes per kernel call
+  -s seed         : Seed for base key (default: random)
+  -ps seed        : Seed with added crypto-secure random
+  -t threads      : Number of CPU threads
+  -nosse          : Disable SSE hash functions
+  -l              : List CUDA devices
+  -check          : Verify CPU/GPU kernel correctness
+  -kp             : Generate key pair
+  -sp pubkey      : Start with public key (split-key mode)
+  -rp priv file   : Reconstruct private key from partial
+  -r rekey        : Rekey interval in MegaKeys
+
+Coordinate targeting options:
+  -stego          : Enable coordinate targeting mode
+  -tx <hex>       : Target X coordinate (1-64 hex chars)
+  -mx <hex>       : Mask for X coordinate (optional)
+  --prefix <n>    : Match first N bytes (1-32)
+```
+
+## Building
+
+### Windows (Visual Studio 2017+)
+
+1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
+2. Open `VanitySearch.sln`
+3. Set Windows SDK version in project properties if needed
+4. Build in Release configuration
+
+Note: Update CUDA paths in `.vcxproj` if using a different CUDA version.
+
+### Linux
 
 ```bash
-# Match AA at byte 0, BB at byte 2, CC at byte 4, DD at byte 6
-./VanitySearch -gpu -stego \
-  -tx AA00BB00CC00DD00000000000000000000000000000000000000000000000000 \
-  -mx FF00FF00FF00FF00000000000000000000000000000000000000000000000000
+# Install CUDA SDK first
 
-# "CAFE" at start, "BABE" in middle
-./VanitySearch -gpu -stego \
-  -tx CAFE000000000000000000000000BABE0000000000000000000000000000000000 \
-  -mx FFFF000000000000000000000000FFFF0000000000000000000000000000000000
+# CPU-only build
+make all
+
+# GPU build (adjust CCAP for your GPU)
+make gpu=1 CCAP=8.9 all
 ```
 
-### Output Format
-
-```
-PubAddress: STEGO:DEADBEEF9CEDE7A287A2D6E4C6D398D8F2C5444B536E2CFCEF75275130E018E2
-Priv (WIF): p2pkh:KxKijNaJ3WRLgTan7ivnxiKV9xQa2jYb83QQv87ZTEQ7EQAFf34S  
-Priv (HEX): 0x20EDCAAC0157FE219C1B7F6BB0435A86955B4087569D56D4E6DF3F1F38DEB080
+Edit `Makefile` to set CUDA paths:
+```makefile
+CUDA       = /usr/local/cuda-12.0
+CXXCUDA    = /usr/bin/g++
 ```
 
-### Traditional Vanity Mode (Original)
+Common compute capabilities:
+- RTX 4090/4080: 8.9
+- RTX 3090/3080: 8.6
+- RTX 2080: 7.5
+- GTX 1080: 6.1
+
+### Docker
 
 ```bash
-# Find address starting with "1Love"
-./VanitySearch -gpu 1Love
+# CPU build
+./docker/cpu/build.sh
 
-# Case-insensitive
-./VanitySearch -gpu -i 1love
+# GPU build
+env CCAP=8.9 CUDA=12.0 ./docker/cuda/build.sh
 
-# Bech32 (native SegWit)
-./VanitySearch -gpu -bech32 bc1qtest
+# Run
+docker run -it --rm --gpus all --network none vanitysearch -gpu -stop 1Test
 ```
 
----
+## Examples
 
-## CLI Reference
+### Vanity Address Generation
 
-### Stego Flags
+```
+$ ./VanitySearch -gpu -stop 1Drew
+VanitySearch v1.19
+Difficulty: 264104224
+Search: 1Drew [Compressed]
+Start Fri Dec 19 12:00:00 2025
+Base Key: A1B2C3D4E5F6...
+Number of CPU thread: 7
+GPU: GPU #0 NVIDIA GeForce RTX 4090 (128x128 cores) Grid(1024x128)
+[27542.81 Mkey/s][GPU 26144.42 Mkey/s][Total 2^33.12][Prob 78.2%][Found 1]
 
-| Flag | Description | Example |
-|------|-------------|---------|
-| `-stego` | Enable steganography mode | `-stego` |
-| `-tx <hex>` | Target X coordinate (1-64 hex chars) | `-tx DEADBEEF` |
-| `-mx <hex>` | Custom mask (1-64 hex chars) | `-mx FF00FF00` |
-| `--prefix <n>` | Match first N bytes (1-32) | `--prefix 4` |
-
-### General Flags
-
-| Flag | Description | Example |
-|------|-------------|---------|
-| `-gpu` | Use GPU acceleration | `-gpu` |
-| `-gpuId <n>` | Select specific GPU | `-gpuId 0` |
-| `-stop` | Stop after first match | `-stop` |
-| `-o <file>` | Output to file | `-o results.txt` |
-| `-t <n>` | Number of CPU threads | `-t 4` |
-
----
-
-## Difficulty Reference
-
-| Bits | Hex Chars | Time @ 27 GKeys/s |
-|------|-----------|-------------------|
-| 32 | 8 | 0.16 sec |
-| 40 | 10 | 41 sec |
-| 48 | 12 | 2.9 hours |
-| 56 | 14 | 31 days |
-| 64 | 16 | 21 years |
-
----
-
-## Verifying Results
-
-```python
-# pip install ecdsa
-from ecdsa import SECP256k1, SigningKey
-
-def verify_stego(priv_hex, expected_prefix):
-    priv_hex = priv_hex.replace('0x', '').zfill(64)
-    sk = SigningKey.from_string(bytes.fromhex(priv_hex), curve=SECP256k1)
-    pk = sk.verifying_key.to_string()
-    x_coord = pk[:32].hex().upper()
-    print(f"X Coordinate: {x_coord}")
-    print(f"Starts with {expected_prefix}: {x_coord.startswith(expected_prefix.upper())}")
-
-verify_stego("20EDCAAC0157FE219C1B7F6BB0435A86955B4087569D56D4E6DF3F1F38DEB080", "DEADBEEF")
+PubAddress: 1DrewXyz123abc456def789ghi012jkl
+Priv (WIF): p2pkh:KxYz...
+Priv (HEX): 0x123ABC...
 ```
 
----
+### Coordinate Targeting
 
-## Files Modified from Original VanitySearch
+```
+$ ./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4
+VanitySearch v1.19
+=== COORDINATE TARGETING MODE ===
+Target X: deadbeef00000000000000000000000000000000000000000000000000000000
+Mask:     ffffffff00000000000000000000000000000000000000000000000000000000
+Bits: 32 (difficulty 2^32)
+Estimate: 0.16 sec @ 27 GKeys/s
+=============================
+Start Fri Dec 19 12:00:00 2025
+GPU: GPU #0 NVIDIA GeForce RTX 4090 (128x128 cores) Grid(1024x128)
+[27688.04 Mkey/s][GPU 26144.42 Mkey/s][Total 2^32.04][Prob 51.2%][Found 1]
 
-| File | Changes |
-|------|---------|
-| `main.cpp` | Added `-stego`, `-tx`, `-mx`, `--prefix` CLI |
-| `Vanity.cpp` | Stego key reconstruction with endomorphism fix |
-| `Vanity.h` | Added `stegoMode`, `StegoTarget` members |
-| `GPU/GPUEngine.cu` | Stego kernel, constant memory, SM 8.9 support |
-| `GPU/GPUCompute.h` | `CheckStegoPoint()`, `CheckStegoComp()` functions |
-| `StegoTarget.h` | **NEW** - Target/mask parsing utilities |
-| `Makefile` | Updated for modern CUDA, multi-arch support |
+PubKey X: DEADBEEF1A2B3C4D5E6F...
+Priv (WIF): p2pkh:Kx...
+Priv (HEX): 0x...
+```
 
----
+## Split-Key Generation
 
-## Technical Documentation
+Generate vanity addresses for third parties without exposing private keys:
 
-See `STEGO_TECHNICAL_DOCS.md` for:
-- Complete architecture documentation
-- CUDA implementation details  
-- Key reconstruction math
-- How to extend to Y coordinate / Hash160 matching
+**Step 1: Requester generates keypair**
+```bash
+./VanitySearch -kp
+Priv : L4U2Ca2wyo721n7j9nXM9oUWLzCj19nKtLeJuTXZP3AohW9wVgrH
+Pub  : 03FC71AE1E88F143E8B05326FC9A83F4DAB93EA88FFEACD37465ED843FCC75AA81
+```
 
----
+**Step 2: Searcher finds match using public key**
+```bash
+./VanitySearch -sp 03FC71AE1E88F143E8B05326FC9A83F4DAB93EA88FFEACD37465ED843FCC75AA81 -gpu -stop -o keyinfo.txt 1Alice
+```
+
+**Step 3: Requester reconstructs final key**
+```bash
+./VanitySearch -rp L4U2Ca2wyo721n7j9nXM9oUWLzCj19nKtLeJuTXZP3AohW9wVgrH keyinfo.txt
+```
+
+## Technical Details
+
+### How Coordinate Targeting Works
+
+In standard mode, VanitySearch:
+1. Generates keypairs (private key → public key)
+2. Hashes public key (SHA256 → RIPEMD160)
+3. Encodes as Base58/Bech32 address
+4. Compares against target prefix
+
+In coordinate targeting mode:
+1. Generates keypairs (private key → public key)
+2. Compares raw X/Y coordinates against target using bitmask
+3. Skips hashing entirely → 3-4x faster
+
+### Endomorphism Optimization
+
+VanitySearch uses secp256k1's efficiently-computable endomorphism to get 6 keys per scalar multiplication:
+- Original point P
+- Endomorphism #1: (βx, y) 
+- Endomorphism #2: (β²x, y)
+- Negations of all three: (x, -y)
+
+This 6x multiplier applies to both address and coordinate targeting modes.
 
 ## License
 
-VanitySearch is licensed under GPLv3.
+GPLv3 - See [LICENSE.txt](LICENSE.txt)
 
 ## Credits
 
-- Original VanitySearch by [Jean-Luc Pons](https://github.com/JeanLucPons/VanitySearch)
-- Steganography mode extension - 2024
+- Original VanitySearch by [Jean Luc Pons](https://github.com/JeanLucPons)
+- Coordinate targeting mode added by [8144225309](https://github.com/8144225309)
