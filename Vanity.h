@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include "SECP256k1.h"
+#include "StegoTarget.h"
 #include "GPU/GPUEngine.h"
 #ifdef WIN64
 #include <Windows.h>
@@ -72,7 +73,7 @@ public:
 
   VanitySearch(Secp256K1 *secp, std::vector<std::string> &prefix, std::string seed, int searchMode,
                bool useGpu,bool stop,std::string outputFile, bool useSSE,uint32_t maxFound,uint64_t rekey,
-               bool caseSensitive,Point &startPubKey,bool paranoiacSeed);
+               bool caseSensitive,Point &startPubKey,bool paranoiacSeed, StegoTarget *stegoTarget = NULL);
 
   void Search(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize);
   void FindKeyCPU(TH_PARAM *p);
@@ -134,6 +135,10 @@ private:
   std::vector<prefix_t> usedPrefix;
   std::vector<LPREFIX> usedPrefixL;
   std::vector<std::string> &inputPrefixes;
+  
+  // Steganography mode
+  bool stegoMode;
+  StegoTarget stegoTarget;
 
   Int beta;
   Int lambda;

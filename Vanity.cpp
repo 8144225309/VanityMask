@@ -40,7 +40,8 @@ Point _2Gn;
 
 VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,string seed,int searchMode,
                            bool useGpu, bool stop, string outputFile, bool useSSE, uint32_t maxFound,
-                           uint64_t rekey, bool caseSensitive, Point &startPubKey, bool paranoiacSeed)
+                           uint64_t rekey, bool caseSensitive, Point &startPubKey, bool paranoiacSeed,
+                           StegoTarget *stegoTargetPtr)
   :inputPrefixes(inputPrefixes) {
 
   this->secp = secp;
@@ -57,6 +58,14 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
   this->hasPattern = false;
   this->caseSensitive = caseSensitive;
   this->startPubKeySpecified = !startPubKey.isZero();
+  
+  // Steganography mode
+  this->stegoMode = (stegoTargetPtr != NULL);
+  if (stegoTargetPtr) {
+    memcpy(&this->stegoTarget, stegoTargetPtr, sizeof(StegoTarget));
+  } else {
+    memset(&this->stegoTarget, 0, sizeof(StegoTarget));
+  }
 
   lastRekey = 0;
   prefixes.clear();
@@ -74,7 +83,14 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
                    (inputPrefixes[i].find('?') != std::string::npos) );
   }
 
-  if (!hasPattern) {
+  // Steganography mode skips prefix processing
+  if (stegoMode) {
+    nbPrefix = 0;
+    onlyFull = false;
+    searchType = P2PKH;  // Doesn't matter for stego, but needs to be set
+    _difficulty = pow(2.0, stegoTarget.numBits);
+    printf("Steganography mode: Matching %d bits of pubkey X coordinate\n", stegoTarget.numBits);
+  } else if (!hasPattern) {
 
     // No wildcard used, standard search
     // Insert prefixes
@@ -1522,15 +1538,24 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
 
   getGPUStartingKeys(thId, g.GetGroupSize(), nbThread, keys, p);
 
-  g.SetSearchMode(searchMode);
-  g.SetSearchType(searchType);
-  if (onlyFull) {
-    g.SetPrefix(usedPrefixL,nbPrefix);
+  // Setup GPU based on mode
+  if (stegoMode) {
+    // Steganography mode - set target and mask
+    g.SetSearchMode(SEARCH_COMPRESSED);  // Use compressed for stego
+    g.SetStegoTarget(stegoTarget.value, stegoTarget.mask);
+    printf("Steganography mode enabled on GPU %d\n", ph->gpuId);
   } else {
-    if(hasPattern)
-      g.SetPattern(inputPrefixes[0].c_str());
-    else
-      g.SetPrefix(usedPrefix);
+    // Normal vanity search mode
+    g.SetSearchMode(searchMode);
+    g.SetSearchType(searchType);
+    if (onlyFull) {
+      g.SetPrefix(usedPrefixL,nbPrefix);
+    } else {
+      if(hasPattern)
+        g.SetPattern(inputPrefixes[0].c_str());
+      else
+        g.SetPrefix(usedPrefix);
+    }
   }
 
   getGPUStartingKeys(thId, g.GetGroupSize(), nbThread, keys, p);
@@ -1548,13 +1573,62 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
       ph->rekeyRequest = false;
     }
 
-    // Call kernel
-    ok = g.Launch(found);
+    // Call kernel - use stego version if in stego mode
+    if (stegoMode) {
+      ok = g.LaunchStego(found);
+    } else {
+      ok = g.Launch(found);
+    }
 
     for(int i=0;i<(int)found.size() && !endOfSearch;i++) {
 
       ITEM it = found[i];
-      checkAddr(*(prefix_t *)(it.hash), it.hash, keys[it.thId], it.incr, it.endo, it.mode);
+      
+      if (stegoMode) {
+        // Steganography match - reconstruct and output the key
+        // Order matters! increment -> endomorphism -> symmetric
+        Int finalKey;
+        finalKey.Set(&keys[it.thId]);
+        
+        // Step 1: Add increment (always the absolute value - the actual offset)
+        int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
+        finalKey.Add((uint64_t)absIncr);
+        
+        // Step 2: Apply endomorphism multiplication
+        // If endo=1, we matched beta*x, so key = (base+incr)*lambda
+        // If endo=2, we matched beta2*x, so key = (base+incr)*lambda2
+        if (it.endo == 1) {
+          finalKey.ModMulK1order(&lambda);
+        } else if (it.endo == 2) {
+          finalKey.ModMulK1order(&lambda2);
+        }
+        
+        // Step 3: Handle symmetric (negated Y) - incr<0 means we matched -P
+        if (it.incr < 0) {
+          finalKey.Neg();
+          finalKey.Add(&secp->order);
+        }
+        
+        // Get public key and output
+        Point pubKey = secp->ComputePublicKey(&finalKey);
+        string pubHex = secp->GetPublicKeyHex(true, pubKey);
+        string privHex = finalKey.GetBase16();
+        
+        // Extract X coordinate from compressed pubkey (skip 02/03 prefix)
+        string xHex = (pubHex.length() > 2) ? pubHex.substr(2, 64) : "error";
+        
+        // Output the match
+        output("STEGO:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
+        
+        nbFoundKey++;
+        if (stopWhenFound) {
+          endOfSearch = true;
+        }
+        
+      } else {
+        // Normal vanity search
+        checkAddr(*(prefix_t *)(it.hash), it.hash, keys[it.thId], it.incr, it.endo, it.mode);
+      }
 
     }
 

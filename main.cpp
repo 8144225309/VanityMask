@@ -18,6 +18,7 @@
 #include "Timer.h"
 #include "Vanity.h"
 #include "SECP256k1.h"
+#include "StegoTarget.h"
 #include <fstream>
 #include <string>
 #include <string.h>
@@ -37,7 +38,8 @@ void printUsage() {
   printf("             [-gpuId gpuId1[,gpuId2,...]] [-g g1x,g1y,[,g2x,g2y,...]]\n");
   printf("             [-o outputfile] [-m maxFound] [-ps seed] [-s seed] [-t nbThread]\n");
   printf("             [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]\n");
-  printf("             [-rp privkey partialkeyfile] [prefix]\n\n");
+  printf("             [-rp privkey partialkeyfile] [prefix]\n");
+  printf("             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n\n");
   printf(" prefix: prefix to search (Can contains wildcard '?' or '*')\n");
   printf(" -v: Print version\n");
   printf(" -u: Search uncompressed addresses\n");
@@ -62,6 +64,11 @@ void printUsage() {
   printf(" -rp privkey partialkeyfile: Reconstruct final private key(s) from partial key(s) info.\n");
   printf(" -sp startPubKey: Start the search with a pubKey (for private key splitting)\n");
   printf(" -r rekey: Rekey interval in MegaKey, default is disabled\n");
+  printf("\nSteganography mode:\n");
+  printf(" -stego: Enable steganography mode (match raw pubkey X coordinate)\n");
+  printf(" -tx <hex>: Target value for X coordinate (hex, up to 64 chars)\n");
+  printf(" -mx <hex>: Mask for X coordinate (1=check, 0=ignore)\n");
+  printf(" --prefix <n>: Match first N bytes of X (auto-generates mask)\n");
   exit(0);
 
 }
@@ -400,6 +407,14 @@ int main(int argc, char* argv[]) {
   bool startPubKeyCompressed;
   bool caseSensitive = true;
   bool paranoiacSeed = false;
+  
+  // Steganography mode variables
+  bool stegoMode = false;
+  string stegoTargetHex = "";
+  string stegoMaskHex = "";
+  int stegoPrefixBytes = 0;
+  StegoTarget stegoTarget;
+  memset(&stegoTarget, 0, sizeof(stegoTarget));
 
   while (a < argc) {
 
@@ -530,6 +545,22 @@ int main(int argc, char* argv[]) {
       a++;
       rekey = (uint64_t)getInt("rekey", argv[a]);
       a++;
+    } else if (strcmp(argv[a], "-stego") == 0) {
+      stegoMode = true;
+      searchMode = SEARCH_STEGO;
+      a++;
+    } else if (strcmp(argv[a], "-tx") == 0) {
+      a++;
+      stegoTargetHex = string(argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "-mx") == 0) {
+      a++;
+      stegoMaskHex = string(argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "--prefix") == 0) {
+      a++;
+      stegoPrefixBytes = getInt("prefix", argv[a]);
+      a++;
     } else if (strcmp(argv[a], "-h") == 0) {
       printUsage();
     } else if (a == argc - 1) {
@@ -566,8 +597,54 @@ int main(int argc, char* argv[]) {
     searchMode = (startPubKeyCompressed)?SEARCH_COMPRESSED:SEARCH_UNCOMPRESSED;
   }
 
+  // Steganography mode setup
+  if (stegoMode) {
+    if (stegoTargetHex.empty()) {
+      printf("Error: Steganography mode requires -tx <target_hex>\n");
+      exit(-1);
+    }
+    
+    // Parse target value
+    int bytes = parseHexToLimbs(stegoTargetHex.c_str(), stegoTarget.value);
+    if (bytes < 0) {
+      printf("Error: Invalid hex in -tx\n");
+      exit(-1);
+    }
+    
+    // Generate or parse mask
+    if (stegoPrefixBytes > 0) {
+      generatePrefixMask(stegoTarget.mask, stegoPrefixBytes);
+    } else if (!stegoMaskHex.empty()) {
+      parseHexToLimbs(stegoMaskHex.c_str(), stegoTarget.mask);
+    } else {
+      // Default: generate mask for the bytes we have
+      generatePrefixMask(stegoTarget.mask, bytes);
+    }
+    
+    stegoTarget.numBits = countMaskBits(stegoTarget.mask);
+    
+    char hexBuf[65];
+    printf("\n=== STEGANOGRAPHY MODE ===\n");
+    limbsToHex(stegoTarget.value, hexBuf);
+    printf("Target X:   %s\n", hexBuf);
+    limbsToHex(stegoTarget.mask, hexBuf);
+    printf("Mask:       %s\n", hexBuf);
+    printf("Bits:       %d (difficulty 2^%d)\n", stegoTarget.numBits, stegoTarget.numBits);
+    
+    // Estimate time at 8.5 GKeys/s
+    double difficulty = pow(2.0, stegoTarget.numBits);
+    double seconds = difficulty / 8.5e9;
+    if (seconds < 60) printf("Estimate:   %.1f seconds @ 8.5 GKeys/s\n", seconds);
+    else if (seconds < 3600) printf("Estimate:   %.1f minutes @ 8.5 GKeys/s\n", seconds / 60.0);
+    else if (seconds < 86400) printf("Estimate:   %.1f hours @ 8.5 GKeys/s\n", seconds / 3600.0);
+    else printf("Estimate:   %.1f days @ 8.5 GKeys/s\n", seconds / 86400.0);
+    printf("==========================\n\n");
+    
+    searchMode = SEARCH_STEGO;
+  }
+
   VanitySearch *v = new VanitySearch(secp, prefix, seed, searchMode, gpuEnable, stop, outputFile, sse,
-    maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed);
+    maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed, stegoMode ? &stegoTarget : NULL);
   v->Search(nbCPUThread,gpuId,gridSize);
 
   return 0;

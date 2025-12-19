@@ -34,6 +34,11 @@
 #include "GPUHash.h"
 #include "GPUBase58.h"
 #include "GPUWildcard.h"
+
+// DEFINITION of steganography constant memory - MUST be before GPUCompute.h
+__constant__ uint64_t _stego_value[4];
+__constant__ uint64_t _stego_mask[4];
+
 #include "GPUCompute.h"
 
 // ---------------------------------------------------------------------------------------
@@ -75,6 +80,15 @@ __global__ void comp_keys_p2sh_pattern(uint32_t mode, prefix_t *pattern, uint64_
   int xPtr = (blockIdx.x*blockDim.x) * 8;
   int yPtr = xPtr + 4 * blockDim.x;
   ComputeKeysP2SH(mode, keys + xPtr, keys + yPtr, NULL, (uint32_t *)pattern, maxFound, found);
+
+}
+
+// Steganography kernel - matches raw pubkey X coordinate against mask
+__global__ void comp_keys_stego(uint64_t *keys, uint32_t maxFound, uint32_t *found) {
+
+  int xPtr = (blockIdx.x*blockDim.x) * 8;
+  int yPtr = xPtr + 4 * blockDim.x;
+  ComputeKeysStego(keys + xPtr, keys + yPtr, maxFound, found);
 
 }
 
@@ -156,6 +170,7 @@ int _ConvertSMVer2Cores(int major, int minor) {
       {0x75,  64},
       {0x80,  64},
       {0x86, 128},
+      {0x89, 128}, // RTX 4090 (Ada Lovelace)
       {-1, -1} };
 
   int index = 0;
@@ -217,6 +232,8 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
                       nbThread / nbThreadPerGroup,
                       nbThreadPerGroup);
   deviceName = std::string(tmp);
+  numMP = deviceProp.multiProcessorCount;
+  numCores = _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor) * numMP;
 
   // Prefer L1 (We do not use __shared__ at all)
   err = cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
@@ -284,6 +301,7 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
   initialised = true;
   pattern = "";
   hasPattern = false;
+  stegoMode = false;
   inputPrefixLookUp = NULL;
 
 }
@@ -334,7 +352,7 @@ void GPUEngine::PrintCudaInfo() {
       i,deviceProp.name,deviceProp.multiProcessorCount,
       _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
       deviceProp.major, deviceProp.minor,(double)deviceProp.totalGlobalMem/1048576.0,
-      sComputeMode[deviceProp.computeMode]);
+      sComputeMode[0]);
 
   }
 
@@ -598,6 +616,108 @@ bool GPUEngine::Launch(std::vector<ITEM> &prefixFound,bool spinWait) {
   }
 
   return callKernel();
+
+}
+
+// =============================================================================
+// STEGANOGRAPHY MODE
+// =============================================================================
+
+void GPUEngine::SetStegoTarget(uint64_t *value, uint64_t *mask) {
+
+  cudaError_t err;
+  
+  // Copy target value to constant memory
+  err = cudaMemcpyToSymbol(_stego_value, value, 4 * sizeof(uint64_t));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetStegoTarget value: %s\n", cudaGetErrorString(err));
+    return;
+  }
+  
+  // Copy mask to constant memory
+  err = cudaMemcpyToSymbol(_stego_mask, mask, 4 * sizeof(uint64_t));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetStegoTarget mask: %s\n", cudaGetErrorString(err));
+    return;
+  }
+  
+  stegoMode = true;
+  
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetStegoTarget: %s\n", cudaGetErrorString(err));
+  }
+
+}
+
+bool GPUEngine::callKernelStego() {
+
+  // Reset nbFound
+  cudaMemset(outputPrefix, 0, 4);
+
+  // Call steganography kernel
+  comp_keys_stego <<< nbThread / nbThreadPerGroup, nbThreadPerGroup >>> 
+    (inputKey, maxFound, outputPrefix);
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: Stego Kernel: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+  return true;
+
+}
+
+bool GPUEngine::LaunchStego(std::vector<ITEM> &found, bool spinWait) {
+
+  found.clear();
+
+  // Get the result
+  if (spinWait) {
+    cudaMemcpy(outputPrefixPinned, outputPrefix, outputSize, cudaMemcpyDeviceToHost);
+  } else {
+    cudaEvent_t evt;
+    cudaEventCreate(&evt);
+    cudaMemcpyAsync(outputPrefixPinned, outputPrefix, 4, cudaMemcpyDeviceToHost, 0);
+    cudaEventRecord(evt, 0);
+    while (cudaEventQuery(evt) == cudaErrorNotReady) {
+      Timer::SleepMillis(1);
+    }
+    cudaEventDestroy(evt);
+  }
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: LaunchStego: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+
+  // Look for matches found
+  uint32_t nbFound = outputPrefixPinned[0];
+  if (nbFound > maxFound) {
+    if (!lostWarning) {
+      printf("\nWarning, %d items lost\n", (nbFound - maxFound));
+      lostWarning = true;
+    }
+    nbFound = maxFound;
+  }
+
+  // Copy results
+  cudaMemcpy(outputPrefixPinned, outputPrefix, nbFound * ITEM_SIZE + 4, cudaMemcpyDeviceToHost);
+
+  for (uint32_t i = 0; i < nbFound; i++) {
+    uint32_t *itemPtr = outputPrefixPinned + (i * ITEM_SIZE32 + 1);
+    ITEM it;
+    it.thId = itemPtr[0];
+    int16_t *ptr = (int16_t *)&(itemPtr[1]);
+    it.endo = ptr[0] & 0x7FFF;
+    it.mode = (ptr[0] & 0x8000) != 0;
+    it.incr = ptr[1];
+    it.hash = (uint8_t *)(itemPtr + 2);
+    found.push_back(it);
+  }
+
+  return callKernelStego();
 
 }
 
