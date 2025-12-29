@@ -37,11 +37,56 @@ Point Gn[CPU_GRP_SIZE / 2];
 Point _2Gn;
 
 // ----------------------------------------------------------------------------
+// Helper: Compute modular inverse using extended Euclidean algorithm
+// result = a^(-1) mod n
+// ----------------------------------------------------------------------------
+static void ModInvOrder(Int *result, Int *a, Int *n) {
+  // Extended Euclidean Algorithm
+  // Returns a^(-1) mod n
+  Int u, v, x1, x2, q, r, temp;
+
+  u.Set(n);
+  v.Set(a);
+  x1.SetInt32(0);
+  x2.SetInt32(1);
+
+  while (!v.IsZero() && !v.IsOne()) {
+    // q = u / v
+    q.Set(&u);
+    q.Div(&v, &r);  // q = u/v, r = u%v
+
+    // x1, x2 = x2, x1 - q*x2
+    temp.Set(&q);
+    temp.Mult(&x2);
+    temp.Neg();
+    temp.Add(n);  // Make positive
+    temp.Mod(n);
+    temp.Add(&x1);
+    temp.Mod(n);
+
+    x1.Set(&x2);
+    x2.Set(&temp);
+
+    // u, v = v, r
+    u.Set(&v);
+    v.Set(&r);
+  }
+
+  if (v.IsOne()) {
+    result->Set(&x2);
+    result->Mod(n);
+  } else {
+    result->SetInt32(0);  // No inverse exists
+  }
+}
+
+// ----------------------------------------------------------------------------
 
 VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,string seed,int searchMode,
                            bool useGpu, bool stop, string outputFile, bool useSSE, uint32_t maxFound,
                            uint64_t rekey, bool caseSensitive, Point &startPubKey, bool paranoiacSeed,
-                           StegoTarget *stegoTargetPtr)
+                           StegoTarget *stegoTargetPtr,
+                           bool sigModeIn, bool schnorrModeIn, Int *sigMsgHashPtr, Int *sigPrivKeyPtr)
   :inputPrefixes(inputPrefixes) {
 
   this->secp = secp;
@@ -65,6 +110,20 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
     memcpy(&this->stegoTarget, stegoTargetPtr, sizeof(StegoTarget));
   } else {
     memset(&this->stegoTarget, 0, sizeof(StegoTarget));
+  }
+
+  // Signature R-value grinding mode
+  this->sigMode = sigModeIn;
+  this->schnorrMode = schnorrModeIn;
+  if (sigMsgHashPtr) {
+    this->sigMsgHash.Set(sigMsgHashPtr);
+  } else {
+    this->sigMsgHash.SetInt32(0);
+  }
+  if (sigPrivKeyPtr) {
+    this->sigPrivKey.Set(sigPrivKeyPtr);
+  } else {
+    this->sigPrivKey.SetInt32(0);
   }
 
   lastRekey = 0;
@@ -1589,11 +1648,11 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
         // Order matters! increment -> endomorphism -> symmetric
         Int finalKey;
         finalKey.Set(&keys[it.thId]);
-        
+
         // Step 1: Add increment (always the absolute value - the actual offset)
         int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
         finalKey.Add((uint64_t)absIncr);
-        
+
         // Step 2: Apply endomorphism multiplication
         // If endo=1, we matched beta*x, so key = (base+incr)*lambda
         // If endo=2, we matched beta2*x, so key = (base+incr)*lambda2
@@ -1602,29 +1661,91 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
         } else if (it.endo == 2) {
           finalKey.ModMulK1order(&lambda2);
         }
-        
+
         // Step 3: Handle symmetric (negated Y) - incr<0 means we matched -P
         if (it.incr < 0) {
           finalKey.Neg();
           finalKey.Add(&secp->order);
         }
-        
-        // Get public key and output
+
+        // Get public key (R = k*G for signature, or pubkey for stego)
         Point pubKey = secp->ComputePublicKey(&finalKey);
-        string pubHex = secp->GetPublicKeyHex(true, pubKey);
-        string privHex = finalKey.GetBase16();
-        
-        // Extract X coordinate from compressed pubkey (skip 02/03 prefix)
-        string xHex = (pubHex.length() > 2) ? pubHex.substr(2, 64) : "error";
-        
-        // Output the match
-        output("STEGO:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
-        
+
+        if (sigMode) {
+          // Signature R-value grinding mode - compute the full signature
+          Int nonce_k;
+          nonce_k.Set(&finalKey);
+
+          // For BIP340 Schnorr: if R.y is odd, negate k
+          if (schnorrMode && pubKey.y.IsOdd()) {
+            nonce_k.Neg();
+            nonce_k.Add(&secp->order);
+            pubKey = secp->ComputePublicKey(&nonce_k);  // Recompute with negated k
+          }
+
+          // Compute s = k^-1 * (z + r*d) mod n
+          // where z = message hash, r = R.x mod n, d = signing private key
+          Int r_val, k_inv, temp, s_val;
+
+          // r = R.x mod n
+          r_val.Set(&pubKey.x);
+          r_val.Mod(&secp->order);
+
+          // k^-1 mod n (using helper function for curve order)
+          ModInvOrder(&k_inv, &nonce_k, &secp->order);
+
+          // temp = r * d mod n
+          temp.Set(&r_val);
+          temp.ModMulK1order(&sigPrivKey);
+
+          // temp = z + r*d mod n
+          temp.ModAddK1order(&sigMsgHash);
+
+          // s = k^-1 * (z + r*d) mod n
+          s_val.Set(&k_inv);
+          s_val.ModMulK1order(&temp);
+
+          // BIP 146: Low-s normalization
+          // If s > order/2, then s = order - s
+          Int halfOrder;
+          halfOrder.Set(&secp->order);
+          halfOrder.ShiftR(1);
+          if (s_val.IsGreater(&halfOrder)) {
+            s_val.Neg();
+            s_val.Add(&secp->order);
+          }
+
+          // Output the signature
+          printf("\n=== SIGNATURE FOUND ===\n");
+          printf("Nonce (k):  %s\n", nonce_k.GetBase16().c_str());
+          printf("R.x:        %s\n", pubKey.x.GetBase16().c_str());
+          printf("R.y parity: %s\n", pubKey.y.IsOdd() ? "odd" : "even");
+          printf("sig.r:      %s\n", r_val.GetBase16().c_str());
+          printf("sig.s:      %s\n", s_val.GetBase16().c_str());
+          printf("Mode:       %s\n", schnorrMode ? "BIP340 Schnorr" : "ECDSA");
+          printf("========================\n");
+
+          // Also output to file if specified
+          string sigInfo = "SIG:r=" + r_val.GetBase16() + ",s=" + s_val.GetBase16();
+          output(sigInfo, nonce_k.GetBase16(), r_val.GetBase16());
+
+        } else {
+          // Pure steganography mode - just output the key
+          string pubHex = secp->GetPublicKeyHex(true, pubKey);
+          string privHex = finalKey.GetBase16();
+
+          // Extract X coordinate from compressed pubkey (skip 02/03 prefix)
+          string xHex = (pubHex.length() > 2) ? pubHex.substr(2, 64) : "error";
+
+          // Output the match
+          output("STEGO:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
+        }
+
         nbFoundKey++;
         if (stopWhenFound) {
           endOfSearch = true;
         }
-        
+
       } else {
         // Normal vanity search
         checkAddr(*(prefix_t *)(it.hash), it.hash, keys[it.thId], it.incr, it.endo, it.mode);

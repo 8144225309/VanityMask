@@ -68,6 +68,10 @@ public:
   int GetNbThread();
   int GetGroupSize();
 
+  // Steganography mode
+  void SetStegoTarget(uint64_t *value, uint64_t *mask);
+  bool LaunchStego(std::vector<ITEM> &found, bool spinWait=false);
+
   bool Check(Secp256K1 *secp);
   std::string deviceName;
 
@@ -77,6 +81,7 @@ public:
 private:
 
   bool callKernel();
+  bool callKernelStego();
   static void ComputeIndex(std::vector<int> &s, int depth, int n);
   static void Browse(FILE *f,int depth, int max, int s);
   bool CheckHash(uint8_t *h, std::vector<ITEM>& found, int tid, int incr, int endo, int *ok);
@@ -101,6 +106,9 @@ private:
   uint32_t outputSize;
   std::string pattern;
   bool hasPattern;
+  bool stegoMode;
+  int numMP;
+  int numCores;
 
 };
 

@@ -73,7 +73,8 @@ public:
 
   VanitySearch(Secp256K1 *secp, std::vector<std::string> &prefix, std::string seed, int searchMode,
                bool useGpu,bool stop,std::string outputFile, bool useSSE,uint32_t maxFound,uint64_t rekey,
-               bool caseSensitive,Point &startPubKey,bool paranoiacSeed, StegoTarget *stegoTarget = NULL);
+               bool caseSensitive,Point &startPubKey,bool paranoiacSeed, StegoTarget *stegoTarget = NULL,
+               bool sigMode = false, bool schnorrMode = false, Int *sigMsgHash = NULL, Int *sigPrivKey = NULL);
 
   void Search(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize);
   void FindKeyCPU(TH_PARAM *p);
@@ -139,6 +140,12 @@ private:
   // Steganography mode
   bool stegoMode;
   StegoTarget stegoTarget;
+
+  // Signature R-value grinding mode
+  bool sigMode;
+  bool schnorrMode;
+  Int sigMsgHash;
+  Int sigPrivKey;
 
   Int beta;
   Int lambda;

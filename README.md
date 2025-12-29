@@ -14,12 +14,19 @@ VanityMask includes all original VanitySearch functionality for Bitcoin vanity a
 - Wildcard pattern matching (`?` and `*`)
 - Case-insensitive search option
 
-### New: Coordinate Targeting Mode
+### New: Coordinate Targeting Mode (Steganography)
 - Match arbitrary bit patterns in public key X, Y, or full XY coordinates
 - GPU-accelerated (~27 GKey/s on RTX 4090)
 - 3-4x faster than address mode (skips SHA256/RIPEMD160 hashing)
 - Configurable bit masks for partial matching
 - Automatic prefix-to-mask conversion
+
+### New: Signature R-Value Grinding Mode
+- Grind ECDSA/Schnorr nonces where R.x matches a target pattern
+- Same GPU kernel as coordinate mode (~27 GKey/s on RTX 4090)
+- Computes valid s-value on CPU after GPU finds matching R
+- BIP146 low-s normalization (automatic)
+- BIP340 Schnorr y-parity handling for Taproot
 
 ## Performance
 
@@ -50,17 +57,40 @@ Coordinate targeting mode benchmarks (RTX 4090):
 ./VanitySearch -gpu -stop -i prefixes.txt
 ```
 
-### Coordinate Targeting Mode
+### Coordinate Targeting Mode (Steganography)
 
 ```bash
 # Match first 5 bytes (40 bits) of X coordinate
 ./VanitySearch -gpu -stego -tx DEADBEEFAA --prefix 5
 
-# Match with explicit mask
-./VanitySearch -gpu -stego -tx DEADBEEF00000000... -mx FFFFFFFF00000000...
+# Match with explicit mask (any position, not just prefix)
+./VanitySearch -gpu -stego \
+  -tx 0000000000000000000000000000000000000000000000DEADBEEF00000000 \
+  -mx 0000000000000000000000000000000000000000000000FFFFFFFF00000000
 
 # Full 64-char hex target (matches specified bits only)
 ./VanitySearch -gpu -stego -tx DEADBEEFAA000000000000000000000000000000000000000000000000000000 --prefix 5
+```
+
+### Signature R-Value Grinding Mode
+
+```bash
+# ECDSA signature with 32-bit R.x prefix
+./VanitySearch -gpu -sig -tx DEADBEEF --prefix 4 \
+  -z 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 \
+  -d 0000000000000000000000000000000000000000000000000000000000000001
+
+# BIP340 Schnorr signature
+./VanitySearch -gpu -sig -tx DEADBEEF --prefix 4 \
+  -z <32-byte-msg-hash-hex> \
+  -d <32-byte-privkey-hex> \
+  --schnorr
+
+# Arbitrary mask position (match middle bytes of R.x)
+./VanitySearch -gpu -sig \
+  -tx 0000000000000000000000000000000000000000000000DEADBEEF00000000 \
+  -mx 0000000000000000000000000000000000000000000000FFFFFFFF00000000 \
+  -z <msg-hash> -d <privkey>
 ```
 
 ### Command Line Options
@@ -102,6 +132,15 @@ Coordinate targeting options:
   -tx <hex>       : Target X coordinate (1-64 hex chars)
   -mx <hex>       : Mask for X coordinate (optional)
   --prefix <n>    : Match first N bytes (1-32)
+
+Signature R-value grinding options:
+  -sig            : Enable signature grinding mode
+  -tx <hex>       : Target R.x value (1-64 hex chars)
+  -mx <hex>       : Mask for R.x (optional)
+  -z <hex>        : Message hash to sign (32-byte hex)
+  -d <hex>        : Signing private key (32-byte hex)
+  --schnorr       : Use BIP340 Schnorr instead of ECDSA
+  --prefix <n>    : Match first N bytes of R.x (1-32)
 ```
 
 ## Building
@@ -172,24 +211,51 @@ Priv (WIF): p2pkh:KxYz...
 Priv (HEX): 0x123ABC...
 ```
 
-### Coordinate Targeting
+### Coordinate Targeting (Steganography)
 
 ```
 $ ./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4
 VanitySearch v1.19
-=== COORDINATE TARGETING MODE ===
+=== STEGANOGRAPHY MODE ===
 Target X: deadbeef00000000000000000000000000000000000000000000000000000000
 Mask:     ffffffff00000000000000000000000000000000000000000000000000000000
 Bits: 32 (difficulty 2^32)
 Estimate: 0.16 sec @ 27 GKeys/s
-=============================
-Start Fri Dec 19 12:00:00 2025
+==========================
 GPU: GPU #0 NVIDIA GeForce RTX 4090 (128x128 cores) Grid(1024x128)
 [27688.04 Mkey/s][GPU 26144.42 Mkey/s][Total 2^32.04][Prob 51.2%][Found 1]
 
-PubKey X: DEADBEEF1A2B3C4D5E6F...
+PubAddress: STEGO:DEADBEEF1A2B3C4D5E6F...
 Priv (WIF): p2pkh:Kx...
 Priv (HEX): 0x...
+```
+
+### Signature R-Value Grinding
+
+```
+$ ./VanitySearch -gpu -sig -tx DEADBEEF --prefix 4 \
+    -z 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 \
+    -d 0000000000000000000000000000000000000000000000000000000000000001
+VanitySearch v1.19
+=== SIGNATURE R-VALUE GRINDING MODE ===
+Target R.x: deadbeef00000000000000000000000000000000000000000000000000000000
+Mask:       ffffffff00000000000000000000000000000000000000000000000000000000
+Bits:       32 (difficulty 2^32)
+Mode:       ECDSA
+Msg Hash:   0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20
+Sign Key:   1...
+Estimate:   0.16 sec @ 27 GKeys/s
+=======================================
+GPU: GPU #0 NVIDIA GeForce RTX 4090 (128x128 cores) Grid(1024x128)
+
+=== SIGNATURE FOUND ===
+Nonce (k):  ABC123...
+R.x:        DEADBEEF1A2B3C4D...
+R.y parity: even
+sig.r:      DEADBEEF1A2B3C4D...
+sig.s:      7F8E9D0C1B2A3948...
+Mode:       ECDSA
+========================
 ```
 
 ## Split-Key Generation
