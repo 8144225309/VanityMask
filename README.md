@@ -5,37 +5,36 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/badge/Version-1.20-orange.svg)](https://github.com/8144225309/VanityMask/releases)
 
-GPU-accelerated Bitcoin vanity address generator with **steganography** and **signature R-value grinding** modes. Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch).
+GPU-accelerated tool for grinding Bitcoin **pubkey coordinates**, **signature R-values**, and **vanity addresses**. Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch).
 
-VanityMask includes all original VanitySearch functionality for Bitcoin vanity address generation, plus an additional **coordinate targeting mode** for matching arbitrary bit patterns directly in secp256k1 public key coordinates.
+Embed arbitrary bit patterns anywhere in your keys. Same kernel powers all grinding modes at ~27 GKey/s on RTX 4090.
 
 ## Features
+
+### Grinding Modes
+
+| Mode | Flag | What it grinds | Use case |
+|------|------|----------------|----------|
+| **Pubkey Mask** | `-mask` | Public key X coordinate | Embed data in pubkeys |
+| **Signature** | `-sig` | ECDSA/Schnorr R.x value | Embed data in signatures |
+| **Vanity** | (default) | Bitcoin address prefix | Custom addresses |
+
+### All Modes Support
+- Arbitrary bit positioning with `-mx` mask flag
+- Prefix matching with `--prefix N` for first N bytes
+- GPU-accelerated at ~27 GKey/s (RTX 4090)
+- Multi-GPU support
 
 ### Original VanitySearch Features
 - Generate vanity Bitcoin addresses (P2PKH, P2SH, BECH32)
 - Multi-GPU support with CUDA optimization
-- CPU parallelization with SSE SHA256/RIPEMD160
 - Split-key vanity generation for third-party searches
 - Wildcard pattern matching (`?` and `*`)
 - Case-insensitive search option
 
-### New: Coordinate Targeting Mode (Steganography)
-- Match arbitrary bit patterns in public key X, Y, or full XY coordinates
-- GPU-accelerated (~27 GKey/s on RTX 4090)
-- 3-4x faster than address mode (skips SHA256/RIPEMD160 hashing)
-- Configurable bit masks for partial matching
-- Automatic prefix-to-mask conversion
-
-### New: Signature R-Value Grinding Mode
-- Grind ECDSA/Schnorr nonces where R.x matches a target pattern
-- Same GPU kernel as coordinate mode (~27 GKey/s on RTX 4090)
-- Computes valid s-value on CPU after GPU finds matching R
-- BIP146 low-s normalization (automatic)
-- BIP340 Schnorr y-parity handling for Taproot
-
 ## Performance
 
-Coordinate targeting mode benchmarks (RTX 4090):
+Mask mode benchmarks (RTX 4090):
 
 | Bits | Difficulty | Expected Time |
 |------|------------|---------------|
@@ -46,38 +45,26 @@ Coordinate targeting mode benchmarks (RTX 4090):
 
 ## Usage
 
-### Standard Vanity Address Search
+### Pubkey Mask Mode
+
+Grind a private key whose public key X coordinate matches your target pattern.
 
 ```bash
-# Find address starting with "1Drew"
-./VanitySearch -gpu -stop 1Drew
+# Match first 4 bytes (32 bits) of X coordinate
+./VanitySearch -gpu -mask -tx DEADBEEF --prefix 4 -stop
 
-# Case-insensitive search
-./VanitySearch -gpu -c -stop 1drew
-
-# BECH32 address
-./VanitySearch -gpu -stop bc1qmy
-
-# Multiple prefixes from file
-./VanitySearch -gpu -stop -i prefixes.txt
-```
-
-### Coordinate Targeting Mode (Steganography)
-
-```bash
-# Match first 5 bytes (40 bits) of X coordinate
-./VanitySearch -gpu -stego -tx DEADBEEFAA --prefix 5
-
-# Match with explicit mask (any position, not just prefix)
-./VanitySearch -gpu -stego \
+# Match with explicit mask (any position)
+./VanitySearch -gpu -mask \
   -tx 0000000000000000000000000000000000000000000000DEADBEEF00000000 \
   -mx 0000000000000000000000000000000000000000000000FFFFFFFF00000000
 
-# Full 64-char hex target (matches specified bits only)
-./VanitySearch -gpu -stego -tx DEADBEEFAA000000000000000000000000000000000000000000000000000000 --prefix 5
+# Match first 5 bytes
+./VanitySearch -gpu -mask -tx DEADBEEFAA --prefix 5
 ```
 
 ### Signature R-Value Grinding Mode
+
+Grind a nonce k where R.x = k*G matches your target pattern.
 
 ```bash
 # ECDSA signature with 32-bit R.x prefix
@@ -98,6 +85,22 @@ Coordinate targeting mode benchmarks (RTX 4090):
   -z <msg-hash> -d <privkey>
 ```
 
+### Standard Vanity Address Search
+
+```bash
+# Find address starting with "1Drew"
+./VanitySearch -gpu -stop 1Drew
+
+# Case-insensitive search
+./VanitySearch -gpu -c -stop 1drew
+
+# BECH32 address
+./VanitySearch -gpu -stop bc1qmy
+
+# Multiple prefixes from file
+./VanitySearch -gpu -stop -i prefixes.txt
+```
+
 ### Command Line Options
 
 ```
@@ -106,7 +109,8 @@ VanitySearch [-check] [-v] [-u] [-b] [-c] [-gpu] [-stop] [-i inputfile]
              [-o outputfile] [-m maxFound] [-ps seed] [-s seed] [-t nbThread]
              [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]
              [-rp privkey partialkeyfile] [prefix]
-             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]
+             [-mask -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]
+             [-sig -tx <target_hex> -z <msghash> -d <privkey> [--schnorr]]
 
 Standard options:
   prefix          : Prefix to search (can contain wildcards '?' or '*')
@@ -132,13 +136,13 @@ Standard options:
   -rp priv file   : Reconstruct private key from partial
   -r rekey        : Rekey interval in MegaKeys
 
-Coordinate targeting options:
-  -stego          : Enable coordinate targeting mode
+Pubkey mask options:
+  -mask           : Enable pubkey coordinate masking
   -tx <hex>       : Target X coordinate (1-64 hex chars)
   -mx <hex>       : Mask for X coordinate (optional)
   --prefix <n>    : Match first N bytes (1-32)
 
-Signature R-value grinding options:
+Signature grinding options:
   -sig            : Enable signature grinding mode
   -tx <hex>       : Target R.x value (1-64 hex chars)
   -mx <hex>       : Mask for R.x (optional)
@@ -202,7 +206,7 @@ docker run -it --rm --gpus all --network none vanitysearch -gpu -stop 1Test
 
 ```
 $ ./VanitySearch -gpu -stop 1Drew
-VanitySearch v1.19
+VanitySearch v1.20
 Difficulty: 264104224
 Search: 1Drew [Compressed]
 Start Fri Dec 19 12:00:00 2025
@@ -216,21 +220,21 @@ Priv (WIF): p2pkh:KxYz...
 Priv (HEX): 0x123ABC...
 ```
 
-### Coordinate Targeting (Steganography)
+### Pubkey Mask Mode
 
 ```
-$ ./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4
-VanitySearch v1.19
-=== STEGANOGRAPHY MODE ===
-Target X: deadbeef00000000000000000000000000000000000000000000000000000000
-Mask:     ffffffff00000000000000000000000000000000000000000000000000000000
-Bits: 32 (difficulty 2^32)
-Estimate: 0.16 sec @ 27 GKeys/s
-==========================
+$ ./VanitySearch -gpu -mask -tx DEADBEEF --prefix 4
+VanitySearch v1.20
+=== PUBKEY MASK MODE ===
+Target X:   deadbeef00000000000000000000000000000000000000000000000000000000
+Mask:       ffffffff00000000000000000000000000000000000000000000000000000000
+Bits:       32 (difficulty 2^32)
+Estimate:   0.16 sec @ 27 GKeys/s
+========================
 GPU: GPU #0 NVIDIA GeForce RTX 4090 (128x128 cores) Grid(1024x128)
 [27688.04 Mkey/s][GPU 26144.42 Mkey/s][Total 2^32.04][Prob 51.2%][Found 1]
 
-PubAddress: STEGO:DEADBEEF1A2B3C4D5E6F...
+PubAddress: MASK:DEADBEEF1A2B3C4D5E6F...
 Priv (WIF): p2pkh:Kx...
 Priv (HEX): 0x...
 ```
@@ -241,7 +245,7 @@ Priv (HEX): 0x...
 $ ./VanitySearch -gpu -sig -tx DEADBEEF --prefix 4 \
     -z 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 \
     -d 0000000000000000000000000000000000000000000000000000000000000001
-VanitySearch v1.19
+VanitySearch v1.20
 === SIGNATURE R-VALUE GRINDING MODE ===
 Target R.x: deadbeef00000000000000000000000000000000000000000000000000000000
 Mask:       ffffffff00000000000000000000000000000000000000000000000000000000
@@ -286,7 +290,7 @@ Pub  : 03FC71AE1E88F143E8B05326FC9A83F4DAB93EA88FFEACD37465ED843FCC75AA81
 
 ## Technical Details
 
-### How Coordinate Targeting Works
+### How Mask Mode Works
 
 In standard mode, VanitySearch:
 1. Generates keypairs (private key → public key)
@@ -294,20 +298,22 @@ In standard mode, VanitySearch:
 3. Encodes as Base58/Bech32 address
 4. Compares against target prefix
 
-In coordinate targeting mode:
+In mask mode:
 1. Generates keypairs (private key → public key)
-2. Compares raw X/Y coordinates against target using bitmask
+2. Compares raw X coordinate against target using bitmask
 3. Skips hashing entirely → 3-4x faster
+
+Both `-mask` and `-sig` modes use the same GPU kernel - they're just grinding different EC points (pubkey vs signature R).
 
 ### Endomorphism Optimization
 
 VanitySearch uses secp256k1's efficiently-computable endomorphism to get 6 keys per scalar multiplication:
 - Original point P
-- Endomorphism #1: (βx, y) 
+- Endomorphism #1: (βx, y)
 - Endomorphism #2: (β²x, y)
 - Negations of all three: (x, -y)
 
-This 6x multiplier applies to both address and coordinate targeting modes.
+This 6x multiplier applies to all modes.
 
 ## License
 
@@ -316,4 +322,4 @@ GPLv3 - See [LICENSE.txt](LICENSE.txt)
 ## Credits
 
 - Original VanitySearch by [Jean Luc Pons](https://github.com/JeanLucPons)
-- Coordinate targeting mode added by [8144225309](https://github.com/8144225309)
+- Mask/signature modes by [8144225309](https://github.com/8144225309)

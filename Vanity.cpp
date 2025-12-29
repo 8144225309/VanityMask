@@ -142,13 +142,13 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
                    (inputPrefixes[i].find('?') != std::string::npos) );
   }
 
-  // Steganography mode skips prefix processing
+  // Mask mode skips prefix processing
   if (stegoMode) {
     nbPrefix = 0;
     onlyFull = false;
-    searchType = P2PKH;  // Doesn't matter for stego, but needs to be set
+    searchType = P2PKH;  // Doesn't matter for mask mode, but needs to be set
     _difficulty = pow(2.0, stegoTarget.numBits);
-    printf("Steganography mode: Matching %d bits of pubkey X coordinate\n", stegoTarget.numBits);
+    printf("Mask mode: Matching %d bits of pubkey X coordinate\n", stegoTarget.numBits);
   } else if (!hasPattern) {
 
     // No wildcard used, standard search
@@ -1738,7 +1738,7 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           string xHex = (pubHex.length() > 2) ? pubHex.substr(2, 64) : "error";
 
           // Output the match
-          output("STEGO:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
+          output("MASK:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
         }
 
         nbFoundKey++;

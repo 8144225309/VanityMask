@@ -40,7 +40,7 @@ void printUsage() {
   printf("             [-o outputfile] [-m maxFound] [-ps seed] [-s seed] [-t nbThread]\n");
   printf("             [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]\n");
   printf("             [-rp privkey partialkeyfile] [prefix]\n");
-  printf("             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n");
+  printf("             [-mask -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n");
   printf("             [-sig -tx <target_hex> -z <msghash> -d <privkey> [--schnorr]]\n\n");
   printf(" prefix: prefix to search (Can contains wildcard '?' or '*')\n");
   printf(" -v: Print version\n");
@@ -66,8 +66,8 @@ void printUsage() {
   printf(" -rp privkey partialkeyfile: Reconstruct final private key(s) from partial key(s) info.\n");
   printf(" -sp startPubKey: Start the search with a pubKey (for private key splitting)\n");
   printf(" -r rekey: Rekey interval in MegaKey, default is disabled\n");
-  printf("\nSteganography mode:\n");
-  printf(" -stego: Enable steganography mode (match raw pubkey X coordinate)\n");
+  printf("\nPubkey mask mode:\n");
+  printf(" -mask: Enable pubkey coordinate masking (match raw X coordinate)\n");
   printf(" -tx <hex>: Target value for X coordinate (hex, up to 64 chars)\n");
   printf(" -mx <hex>: Mask for X coordinate (1=check, 0=ignore)\n");
   printf(" --prefix <n>: Match first N bytes of X (auto-generates mask)\n");
@@ -560,7 +560,7 @@ int main(int argc, char* argv[]) {
       a++;
       rekey = (uint64_t)getInt("rekey", argv[a]);
       a++;
-    } else if (strcmp(argv[a], "-stego") == 0) {
+    } else if (strcmp(argv[a], "-mask") == 0 || strcmp(argv[a], "-stego") == 0) {
       stegoMode = true;
       searchMode = SEARCH_STEGO;
       a++;
@@ -627,10 +627,10 @@ int main(int argc, char* argv[]) {
     searchMode = (startPubKeyCompressed)?SEARCH_COMPRESSED:SEARCH_UNCOMPRESSED;
   }
 
-  // Steganography mode setup
+  // Pubkey mask mode setup
   if (stegoMode) {
     if (stegoTargetHex.empty()) {
-      printf("Error: Steganography mode requires -tx <target_hex>\n");
+      printf("Error: Mask mode requires -tx <target_hex>\n");
       exit(-1);
     }
     
@@ -654,7 +654,7 @@ int main(int argc, char* argv[]) {
     stegoTarget.numBits = countMaskBits(stegoTarget.mask);
     
     char hexBuf[65];
-    printf("\n=== STEGANOGRAPHY MODE ===\n");
+    printf("\n=== PUBKEY MASK MODE ===\n");
     limbsToHex(stegoTarget.value, hexBuf);
     printf("Target X:   %s\n", hexBuf);
     limbsToHex(stegoTarget.mask, hexBuf);
