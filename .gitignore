@@ -1,16 +1,67 @@
-DOC/
-.vs/
-VanitySearchNoCUDA.*
-VanitySearch.vcxproj.user
-VanitySearchCUDA8.vcxproj.user
-VanitySearchCUDA8.vcxproj.user
-VanitySearchCUDA8.VC.opendb
-VanitySearchCUDA8.sdf
-vc140.pdb
-x64/
+# Build artifacts
 obj/
-.idea/
-CMakeLists.txt
+x64/
+Debug/
+Release/
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Linux build output
 VanitySearch
-cmake-build-debug/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vcxproj.user
+*.VC.opendb
+*.VC.db
+*.sdf
+vc*.pdb
+
+# JetBrains IDEs
+.idea/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+
+# Documentation (local builds)
+DOC/
+
+# Legacy/unused project files
+VanitySearchNoCUDA.*
+VanitySearchCUDA8.*
+
+# Profiling
 *.prf
+*.ncu
+*.nsight
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# Benchmark results (local)
+benchmark-results/
