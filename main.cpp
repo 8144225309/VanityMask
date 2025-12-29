@@ -23,6 +23,7 @@
 #include <string>
 #include <string.h>
 #include <stdexcept>
+#include <cmath>
 #include "hash/sha512.h"
 #include "hash/sha256.h"
 
@@ -39,7 +40,8 @@ void printUsage() {
   printf("             [-o outputfile] [-m maxFound] [-ps seed] [-s seed] [-t nbThread]\n");
   printf("             [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]\n");
   printf("             [-rp privkey partialkeyfile] [prefix]\n");
-  printf("             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n\n");
+  printf("             [-stego -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n");
+  printf("             [-sig -tx <target_hex> -z <msghash> -d <privkey> [--schnorr]]\n\n");
   printf(" prefix: prefix to search (Can contains wildcard '?' or '*')\n");
   printf(" -v: Print version\n");
   printf(" -u: Search uncompressed addresses\n");
@@ -69,6 +71,13 @@ void printUsage() {
   printf(" -tx <hex>: Target value for X coordinate (hex, up to 64 chars)\n");
   printf(" -mx <hex>: Mask for X coordinate (1=check, 0=ignore)\n");
   printf(" --prefix <n>: Match first N bytes of X (auto-generates mask)\n");
+  printf("\nSignature R-value grinding mode:\n");
+  printf(" -sig: Enable signature mode (grind for nonce k where R.x matches target)\n");
+  printf(" -tx <hex>: Target R.x value (hex, up to 64 chars)\n");
+  printf(" -z <hex>: Message hash to sign (32-byte hex)\n");
+  printf(" -d <hex>: Signing private key (32-byte hex)\n");
+  printf(" --schnorr: Use BIP340 Schnorr signatures instead of ECDSA\n");
+  printf(" --prefix <n>: Match first N bytes of R.x (auto-generates mask)\n");
   exit(0);
 
 }
@@ -416,6 +425,12 @@ int main(int argc, char* argv[]) {
   StegoTarget stegoTarget;
   memset(&stegoTarget, 0, sizeof(stegoTarget));
 
+  // Signature R-value grinding mode variables
+  bool sigMode = false;
+  string sigMsgHashHex = "";
+  string sigPrivKeyHex = "";
+  bool schnorrMode = false;
+
   while (a < argc) {
 
     if (strcmp(argv[a], "-gpu")==0) {
@@ -561,6 +576,21 @@ int main(int argc, char* argv[]) {
       a++;
       stegoPrefixBytes = getInt("prefix", argv[a]);
       a++;
+    } else if (strcmp(argv[a], "-sig") == 0) {
+      sigMode = true;
+      searchMode = SEARCH_STEGO;  // Reuse stego kernel for R-value grinding
+      a++;
+    } else if (strcmp(argv[a], "-z") == 0) {
+      a++;
+      sigMsgHashHex = string(argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "-d") == 0) {
+      a++;
+      sigPrivKeyHex = string(argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "--schnorr") == 0) {
+      schnorrMode = true;
+      a++;
     } else if (strcmp(argv[a], "-h") == 0) {
       printUsage();
     } else if (a == argc - 1) {
@@ -643,8 +673,80 @@ int main(int argc, char* argv[]) {
     searchMode = SEARCH_STEGO;
   }
 
+  // Signature mode setup
+  Int sigMsgHash;
+  Int sigPrivKey;
+  if (sigMode) {
+    if (stegoTargetHex.empty()) {
+      printf("Error: Signature mode requires -tx <target_hex> for R.x value\n");
+      exit(-1);
+    }
+    if (sigMsgHashHex.empty()) {
+      printf("Error: Signature mode requires -z <msghash> (32-byte message hash)\n");
+      exit(-1);
+    }
+    if (sigPrivKeyHex.empty()) {
+      printf("Error: Signature mode requires -d <privkey> (signing private key)\n");
+      exit(-1);
+    }
+
+    // Parse target R.x value (reuse stego target)
+    int bytes = parseHexToLimbs(stegoTargetHex.c_str(), stegoTarget.value);
+    if (bytes < 0) {
+      printf("Error: Invalid hex in -tx\n");
+      exit(-1);
+    }
+
+    // Generate or parse mask
+    if (stegoPrefixBytes > 0) {
+      generatePrefixMask(stegoTarget.mask, stegoPrefixBytes);
+    } else if (!stegoMaskHex.empty()) {
+      parseHexToLimbs(stegoMaskHex.c_str(), stegoTarget.mask);
+    } else {
+      generatePrefixMask(stegoTarget.mask, bytes);
+    }
+    stegoTarget.numBits = countMaskBits(stegoTarget.mask);
+
+    // Parse message hash
+    sigMsgHash.SetBase16((char *)sigMsgHashHex.c_str());
+    if (sigMsgHash.IsZero() && sigMsgHashHex.length() > 0) {
+      printf("Error: Invalid message hash in -z\n");
+      exit(-1);
+    }
+
+    // Parse signing private key
+    sigPrivKey.SetBase16((char *)sigPrivKeyHex.c_str());
+    if (sigPrivKey.IsZero()) {
+      printf("Error: Invalid private key in -d\n");
+      exit(-1);
+    }
+
+    char hexBuf[65];
+    printf("\n=== SIGNATURE R-VALUE GRINDING MODE ===\n");
+    limbsToHex(stegoTarget.value, hexBuf);
+    printf("Target R.x: %s\n", hexBuf);
+    limbsToHex(stegoTarget.mask, hexBuf);
+    printf("Mask:       %s\n", hexBuf);
+    printf("Bits:       %d (difficulty 2^%d)\n", stegoTarget.numBits, stegoTarget.numBits);
+    printf("Mode:       %s\n", schnorrMode ? "BIP340 Schnorr" : "ECDSA");
+    printf("Msg Hash:   %s\n", sigMsgHash.GetBase16().c_str());
+    printf("Sign Key:   %s...\n", sigPrivKey.GetBase16().substr(0, 16).c_str());
+
+    double difficulty = pow(2.0, stegoTarget.numBits);
+    double seconds = difficulty / 8.5e9;
+    if (seconds < 60) printf("Estimate:   %.1f seconds @ 8.5 GKeys/s\n", seconds);
+    else if (seconds < 3600) printf("Estimate:   %.1f minutes @ 8.5 GKeys/s\n", seconds / 60.0);
+    else if (seconds < 86400) printf("Estimate:   %.1f hours @ 8.5 GKeys/s\n", seconds / 3600.0);
+    else printf("Estimate:   %.1f days @ 8.5 GKeys/s\n", seconds / 86400.0);
+    printf("=======================================\n\n");
+
+    searchMode = SEARCH_STEGO;
+  }
+
   VanitySearch *v = new VanitySearch(secp, prefix, seed, searchMode, gpuEnable, stop, outputFile, sse,
-    maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed, stegoMode ? &stegoTarget : NULL);
+    maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed,
+    (stegoMode || sigMode) ? &stegoTarget : NULL,
+    sigMode, schnorrMode, sigMode ? &sigMsgHash : NULL, sigMode ? &sigPrivKey : NULL);
   v->Search(nbCPUThread,gpuId,gridSize);
 
   return 0;
