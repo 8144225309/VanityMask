@@ -5,25 +5,25 @@ All notable changes to VanityMask will be documented in this file.
 ## [1.20] - 2025-12-29
 
 ### Added
-- **Steganography Mode** (`-stego`): Match raw pubkey X-coordinate patterns at any bit position
+- **Pubkey Mask Mode** (`-mask`): Match raw pubkey X-coordinate patterns at any bit position
 - **Signature R-Value Grinding** (`-sig`): Grind ECDSA/Schnorr nonces for target R.x patterns
 - **Arbitrary Mask Positioning** (`-mx`): Match any bit positions, not just prefix
 - **BIP340 Schnorr Support** (`--schnorr`): Y-parity handling for Taproot signatures
 - **BIP146 Low-S Normalization**: Automatic for all ECDSA signatures
-- **GPU SHA256 for signature computation**: S-value computed on CPU after GPU match
 
 ### Changed
+- Renamed `-stego` to `-mask` (old flag still works for compatibility)
 - Updated CUDA support to 13.0
 - Updated Visual Studio toolset to v143 (VS 2022)
 - Removed deprecated SM architectures (sm_50, sm_60, sm_70)
 
 ### Performance
-- RTX 4090: ~27 GKey/s for stego/signature modes
+- RTX 4090: ~27 GKey/s for mask/signature modes
 - Same kernel for both modes (pure EC point multiplication)
 - 3-4x faster than address mode (no hashing overhead)
 
 ### Technical Details
-- ComputeKeysStego GPU kernel for direct X-coordinate matching
+- ComputeKeysMask GPU kernel for direct X-coordinate matching
 - ModInvOrder helper for modular inverse mod curve order
 - Signature computation: s = k^(-1) * (z + r*d) mod n
 

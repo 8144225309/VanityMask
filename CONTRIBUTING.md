@@ -64,8 +64,8 @@ Before submitting a PR, please test:
 # Verify kernel correctness
 ./VanitySearch -check
 
-# Test stego mode
-./VanitySearch -gpu -stego -tx DEADBEEF --prefix 4 -stop
+# Test mask mode
+./VanitySearch -gpu -mask -tx DEADBEEF --prefix 4 -stop
 
 # Test signature mode
 ./VanitySearch -gpu -sig -tx DEADBEEF --prefix 4 \
