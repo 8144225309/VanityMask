@@ -1,6 +1,11 @@
 # VanityMask
 
-Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch) with GPU-accelerated matching of custom bit patterns in public key X/Y/XY coordinates.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)]()
+[![Version](https://img.shields.io/badge/Version-1.20-orange.svg)](https://github.com/8144225309/VanityMask/releases)
+
+GPU-accelerated Bitcoin vanity address generator with **steganography** and **signature R-value grinding** modes. Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch).
 
 VanityMask includes all original VanitySearch functionality for Bitcoin vanity address generation, plus an additional **coordinate targeting mode** for matching arbitrary bit patterns directly in secp256k1 public key coordinates.
 
