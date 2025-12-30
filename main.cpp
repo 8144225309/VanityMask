@@ -78,6 +78,14 @@ void printUsage() {
   printf(" -d <hex>: Signing private key (32-byte hex)\n");
   printf(" --schnorr: Use BIP340 Schnorr signatures instead of ECDSA\n");
   printf(" --prefix <n>: Match first N bytes of R.x (auto-generates mask)\n");
+  printf("\nTXID grinding mode:\n");
+  printf(" -txid: Enable TXID grinding mode\n");
+  printf(" -raw <hex>: Raw transaction hex\n");
+  printf(" -tx <hex>: Target TXID pattern (hex, up to 64 chars)\n");
+  printf(" -mx <hex>: Mask for TXID (1=check, 0=ignore)\n");
+  printf(" --prefix <n>: Match first N bytes of TXID\n");
+  printf(" -nonce-offset <n>: Byte offset of nonce in tx (default: last 4 bytes)\n");
+  printf(" -nonce-len <n>: Number of nonce bytes to grind (1-8, default: 4)\n");
   exit(0);
 
 }
@@ -431,6 +439,12 @@ int main(int argc, char* argv[]) {
   string sigPrivKeyHex = "";
   bool schnorrMode = false;
 
+  // TXID grinding mode variables
+  bool txidMode = false;
+  string rawTxHex = "";
+  int nonceOffset = -1;  // -1 = auto (last 4 bytes = nLockTime)
+  int nonceLen = 4;      // default 4 bytes
+
   while (a < argc) {
 
     if (strcmp(argv[a], "-gpu")==0) {
@@ -591,6 +605,22 @@ int main(int argc, char* argv[]) {
     } else if (strcmp(argv[a], "--schnorr") == 0) {
       schnorrMode = true;
       a++;
+    } else if (strcmp(argv[a], "-txid") == 0) {
+      txidMode = true;
+      searchMode = SEARCH_TXID;
+      a++;
+    } else if (strcmp(argv[a], "-raw") == 0) {
+      a++;
+      rawTxHex = string(argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "-nonce-offset") == 0) {
+      a++;
+      nonceOffset = getInt("nonce-offset", argv[a]);
+      a++;
+    } else if (strcmp(argv[a], "-nonce-len") == 0) {
+      a++;
+      nonceLen = getInt("nonce-len", argv[a]);
+      a++;
     } else if (strcmp(argv[a], "-h") == 0) {
       printUsage();
     } else if (a == argc - 1) {
@@ -633,19 +663,19 @@ int main(int argc, char* argv[]) {
       printf("Error: Mask mode requires -tx <target_hex>\n");
       exit(-1);
     }
-    
-    // Parse target value
-    int bytes = parseHexToLimbs(stegoTargetHex.c_str(), stegoTarget.value);
+
+    // Parse target value (MSB-aligned to match prefix mask)
+    int bytes = parseHexToLimbsMSB(stegoTargetHex.c_str(), stegoTarget.value);
     if (bytes < 0) {
       printf("Error: Invalid hex in -tx\n");
       exit(-1);
     }
-    
+
     // Generate or parse mask
     if (stegoPrefixBytes > 0) {
       generatePrefixMask(stegoTarget.mask, stegoPrefixBytes);
     } else if (!stegoMaskHex.empty()) {
-      parseHexToLimbs(stegoMaskHex.c_str(), stegoTarget.mask);
+      parseHexToLimbsMSB(stegoMaskHex.c_str(), stegoTarget.mask);
     } else {
       // Default: generate mask for the bytes we have
       generatePrefixMask(stegoTarget.mask, bytes);
@@ -690,8 +720,8 @@ int main(int argc, char* argv[]) {
       exit(-1);
     }
 
-    // Parse target R.x value (reuse stego target)
-    int bytes = parseHexToLimbs(stegoTargetHex.c_str(), stegoTarget.value);
+    // Parse target R.x value (MSB-aligned to match prefix mask)
+    int bytes = parseHexToLimbsMSB(stegoTargetHex.c_str(), stegoTarget.value);
     if (bytes < 0) {
       printf("Error: Invalid hex in -tx\n");
       exit(-1);
@@ -701,7 +731,7 @@ int main(int argc, char* argv[]) {
     if (stegoPrefixBytes > 0) {
       generatePrefixMask(stegoTarget.mask, stegoPrefixBytes);
     } else if (!stegoMaskHex.empty()) {
-      parseHexToLimbs(stegoMaskHex.c_str(), stegoTarget.mask);
+      parseHexToLimbsMSB(stegoMaskHex.c_str(), stegoTarget.mask);
     } else {
       generatePrefixMask(stegoTarget.mask, bytes);
     }
@@ -743,10 +773,100 @@ int main(int argc, char* argv[]) {
     searchMode = SEARCH_STEGO;
   }
 
+  // TXID grinding mode setup
+  std::vector<uint8_t> rawTxBytes;
+  if (txidMode) {
+    if (rawTxHex.empty()) {
+      printf("Error: TXID mode requires -raw <tx_hex>\n");
+      exit(-1);
+    }
+    if (stegoTargetHex.empty()) {
+      printf("Error: TXID mode requires -tx <target_hex> for TXID pattern\n");
+      exit(-1);
+    }
+
+    // Parse raw transaction hex
+    int maxTxLen = 65536;  // 64KB max tx
+    rawTxBytes.resize(maxTxLen);
+    int txLen = parseHexToBytes(rawTxHex.c_str(), rawTxBytes.data(), maxTxLen);
+    if (txLen < 0) {
+      printf("Error: Invalid hex in -raw (must be even length)\n");
+      exit(-1);
+    }
+    if (txLen < 10) {
+      printf("Error: Transaction too short (%d bytes)\n", txLen);
+      exit(-1);
+    }
+    rawTxBytes.resize(txLen);
+
+    // Default nonce offset to last 4 bytes (nLockTime)
+    if (nonceOffset < 0) {
+      nonceOffset = txLen - 4;
+    }
+
+    // Validate nonce position
+    if (nonceOffset < 0 || nonceOffset + nonceLen > txLen) {
+      printf("Error: Nonce position out of bounds (offset=%d, len=%d, txLen=%d)\n",
+             nonceOffset, nonceLen, txLen);
+      exit(-1);
+    }
+    if (nonceLen < 1 || nonceLen > 8) {
+      printf("Error: Nonce length must be 1-8 bytes\n");
+      exit(-1);
+    }
+
+    // Parse target TXID pattern (display byte order for TXID)
+    int bytes = parseHexAsDisplayBytes(stegoTargetHex.c_str(), stegoTarget.value);
+    if (bytes < 0) {
+      printf("Error: Invalid hex in -tx (must be even length)\n");
+      exit(-1);
+    }
+
+    // Generate or parse mask (display order for TXID)
+    if (stegoPrefixBytes > 0) {
+      generateMaskDisplay(stegoTarget.mask, stegoPrefixBytes);
+    } else if (!stegoMaskHex.empty()) {
+      parseHexAsDisplayBytes(stegoMaskHex.c_str(), stegoTarget.mask);
+    } else {
+      generateMaskDisplay(stegoTarget.mask, bytes);
+    }
+    stegoTarget.numBits = countMaskBits(stegoTarget.mask);
+
+    // Display mode info
+    char hexBuf[65];
+    printf("\n=== TXID GRINDING MODE ===\n");
+    printf("Raw TX:     ");
+    if (txLen <= 32) {
+      bytesToHex(rawTxBytes.data(), txLen, hexBuf);
+      printf("%s", hexBuf);
+    } else {
+      bytesToHex(rawTxBytes.data(), 16, hexBuf);
+      printf("%s...", hexBuf);
+      bytesToHex(rawTxBytes.data() + txLen - 16, 16, hexBuf);
+      printf("%s", hexBuf);
+    }
+    printf(" (%d bytes)\n", txLen);
+    printf("Nonce at:   offset %d, %d bytes\n", nonceOffset, nonceLen);
+    limbsToHexDisplay(stegoTarget.value, hexBuf);
+    printf("Target:     %s\n", hexBuf);
+    limbsToHexDisplay(stegoTarget.mask, hexBuf);
+    printf("Mask:       %s\n", hexBuf);
+    printf("Bits:       %d (difficulty 2^%d)\n", stegoTarget.numBits, stegoTarget.numBits);
+
+    double difficulty = pow(2.0, stegoTarget.numBits);
+    double seconds = difficulty / 8.5e9;
+    if (seconds < 60) printf("Estimate:   %.1f seconds @ 8.5 GKeys/s\n", seconds);
+    else if (seconds < 3600) printf("Estimate:   %.1f minutes @ 8.5 GKeys/s\n", seconds / 60.0);
+    else if (seconds < 86400) printf("Estimate:   %.1f hours @ 8.5 GKeys/s\n", seconds / 3600.0);
+    else printf("Estimate:   %.1f days @ 8.5 GKeys/s\n", seconds / 86400.0);
+    printf("==========================\n\n");
+  }
+
   VanitySearch *v = new VanitySearch(secp, prefix, seed, searchMode, gpuEnable, stop, outputFile, sse,
     maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed,
-    (stegoMode || sigMode) ? &stegoTarget : NULL,
-    sigMode, schnorrMode, sigMode ? &sigMsgHash : NULL, sigMode ? &sigPrivKey : NULL);
+    (stegoMode || sigMode || txidMode) ? &stegoTarget : NULL,
+    sigMode, schnorrMode, sigMode ? &sigMsgHash : NULL, sigMode ? &sigPrivKey : NULL,
+    txidMode, rawTxBytes, nonceOffset, nonceLen);
   v->Search(nbCPUThread,gpuId,gridSize);
 
   return 0;

@@ -18,6 +18,7 @@
 #define SEARCH_UNCOMPRESSED  1
 #define SEARCH_BOTH          2
 #define SEARCH_STEGO         3   // Steganography mode - match raw X coordinate
+#define SEARCH_TXID          4   // Transaction ID grinding mode
 
 // Steganography target structure
 typedef struct {
@@ -69,16 +70,86 @@ inline int parseHexToLimbs(const char* hex, uint64_t* limbs) {
     return bytesParsed;
 }
 
-// Generate prefix mask (first N bytes)
+// Parse hex to limbs MSB-aligned (for EC coordinate prefix matching)
+// Places hex bytes at positions 31, 30, 29... (the high-order bytes)
+inline int parseHexToLimbsMSB(const char* hex, uint64_t* limbs) {
+    memset(limbs, 0, 4 * sizeof(uint64_t));
+    if (!hex) return 0;
+
+    size_t len = strlen(hex);
+    if (len == 0) return 0;
+    if (len > 64) len = 64;
+
+    // Pad odd-length hex with leading zero
+    int numBytes = (int)((len + 1) / 2);
+
+    // Parse hex left-to-right and place at MSB positions (31, 30, 29, ...)
+    int hexIdx = 0;
+    for (int i = 0; i < numBytes; i++) {
+        int hi, lo;
+        if (len % 2 == 1 && i == 0) {
+            hi = 0;
+            lo = hexCharToInt(hex[hexIdx++]);
+        } else {
+            hi = hexCharToInt(hex[hexIdx++]);
+            lo = hexCharToInt(hex[hexIdx++]);
+        }
+        if (hi < 0 || lo < 0) return -1;
+
+        uint8_t byte = (uint8_t)((hi << 4) | lo);
+        int pos = 31 - i;  // MSB position (same as generatePrefixMask)
+        int limb = pos / 8;
+        int byteInLimb = pos % 8;
+        limbs[limb] |= ((uint64_t)byte << (byteInLimb * 8));
+    }
+    return numBytes;
+}
+
+// Generate prefix mask (first N bytes) - MSB order for EC coordinates
 inline void generatePrefixMask(uint64_t* mask, int numBytes) {
     memset(mask, 0, 4 * sizeof(uint64_t));
     if (numBytes <= 0 || numBytes > 32) return;
-    
+
     for (int i = 0; i < numBytes; i++) {
         int pos = 31 - i;  // Start from MSB
         int limb = pos / 8;
         int byteInLimb = pos % 8;
         mask[limb] |= ((uint64_t)0xFF << (byteInLimb * 8));
+    }
+}
+
+// Parse hex as byte string (left-to-right) for TXID mode
+// Stores bytes starting at limbs[0] byte 0 (display order)
+inline int parseHexAsDisplayBytes(const char* hex, uint64_t* limbs) {
+    memset(limbs, 0, 4 * sizeof(uint64_t));
+    if (!hex) return 0;
+
+    size_t len = strlen(hex);
+    if (len == 0) return 0;
+    if (len > 64) len = 64;
+    if (len % 2 == 1) return -1;  // Must be even length
+
+    int numBytes = (int)(len / 2);
+    uint8_t* bytes = (uint8_t*)limbs;
+
+    for (int i = 0; i < numBytes; i++) {
+        int hi = hexCharToInt(hex[i * 2]);
+        int lo = hexCharToInt(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        bytes[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return numBytes;
+}
+
+// Generate prefix mask in display order for TXID mode
+// Sets first N bytes starting at limbs[0] byte 0
+inline void generateMaskDisplay(uint64_t* mask, int numBytes) {
+    memset(mask, 0, 4 * sizeof(uint64_t));
+    if (numBytes <= 0 || numBytes > 32) return;
+
+    uint8_t* bytes = (uint8_t*)mask;
+    for (int i = 0; i < numBytes; i++) {
+        bytes[i] = 0xFF;
     }
 }
 
@@ -102,6 +173,42 @@ inline void limbsToHex(const uint64_t* limbs, char* out) {
         }
     }
     out[64] = '\0';
+}
+
+// Convert limbs to hex string in display order (byte 0 first)
+inline void limbsToHexDisplay(const uint64_t* limbs, char* out) {
+    const uint8_t* bytes = (const uint8_t*)limbs;
+    for (int i = 0; i < 32; i++) {
+        sprintf(out + i * 2, "%02x", bytes[i]);
+    }
+    out[64] = '\0';
+}
+
+// Parse hex string to byte array (returns number of bytes, -1 on error)
+inline int parseHexToBytes(const char* hex, uint8_t* bytes, int maxBytes) {
+    if (!hex || !bytes) return 0;
+
+    size_t len = strlen(hex);
+    if (len == 0 || len % 2 != 0) return -1;
+
+    int numBytes = (int)(len / 2);
+    if (numBytes > maxBytes) return -1;
+
+    for (int i = 0; i < numBytes; i++) {
+        int hi = hexCharToInt(hex[i * 2]);
+        int lo = hexCharToInt(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        bytes[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return numBytes;
+}
+
+// Format bytes as hex string
+inline void bytesToHex(const uint8_t* bytes, int numBytes, char* out) {
+    for (int i = 0; i < numBytes; i++) {
+        sprintf(out + i * 2, "%02x", bytes[i]);
+    }
+    out[numBytes * 2] = '\0';
 }
 
 #endif // STEGOTARGET_H
