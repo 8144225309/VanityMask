@@ -5,9 +5,9 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/badge/Version-1.20-orange.svg)](https://github.com/8144225309/VanityMask/releases)
 
-GPU-accelerated tool for grinding Bitcoin **pubkey coordinates**, **signature R-values**, and **vanity addresses**. Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch).
+GPU-accelerated tool for grinding Bitcoin **pubkey coordinates**, **signature R-values**, **transaction IDs**, and **vanity addresses**. Fork of [JeanLucPons/VanitySearch](https://github.com/JeanLucPons/VanitySearch).
 
-Embed arbitrary bit patterns anywhere in your keys. Same kernel powers all grinding modes at ~27 GKey/s on RTX 4090.
+Embed arbitrary bit patterns anywhere in your keys or TXIDs.
 
 ## Features
 
@@ -17,12 +17,13 @@ Embed arbitrary bit patterns anywhere in your keys. Same kernel powers all grind
 |------|------|----------------|----------|
 | **Pubkey Mask** | `-mask` | Public key X coordinate | Embed data in pubkeys |
 | **Signature** | `-sig` | ECDSA/Schnorr R.x value | Embed data in signatures |
+| **TXID** | `-txid` | Transaction ID (double SHA256) | Custom TXID prefixes |
 | **Vanity** | (default) | Bitcoin address prefix | Custom addresses |
 
 ### All Modes Support
 - Arbitrary bit positioning with `-mx` mask flag
 - Prefix matching with `--prefix N` for first N bytes
-- GPU-accelerated at ~27 GKey/s (RTX 4090)
+- GPU-accelerated (~27 GKey/s EC ops, ~8 MKey/s TXID on RTX 4090)
 - Multi-GPU support
 
 ### Original VanitySearch Features
@@ -83,6 +84,22 @@ Grind a nonce k where R.x = k*G matches your target pattern.
   -tx 0000000000000000000000000000000000000000000000DEADBEEF00000000 \
   -mx 0000000000000000000000000000000000000000000000FFFFFFFF00000000 \
   -z <msg-hash> -d <privkey>
+```
+
+### TXID Grinding Mode
+
+Grind a transaction's nonce bytes to produce a TXID matching your target prefix.
+
+```bash
+# Grind nLockTime (last 4 bytes) for TXID prefix "0000"
+./VanitySearch -gpu -txid -raw 0100000001...00000000 -tx 0000 --prefix 2 -stop
+
+# Grind for specific prefix "dead"
+./VanitySearch -gpu -txid -raw <full_tx_hex> -tx dead --prefix 2 -stop
+
+# Custom nonce position (offset 50, 4 bytes)
+./VanitySearch -gpu -txid -raw <tx_hex> -tx beef --prefix 2 \
+  -nonce-offset 50 -nonce-len 4 -stop
 ```
 
 ### Standard Vanity Address Search
@@ -150,6 +167,15 @@ Signature grinding options:
   -d <hex>        : Signing private key (32-byte hex)
   --schnorr       : Use BIP340 Schnorr instead of ECDSA
   --prefix <n>    : Match first N bytes of R.x (1-32)
+
+TXID grinding options:
+  -txid           : Enable TXID grinding mode
+  -raw <hex>      : Raw transaction hex
+  -tx <hex>       : Target TXID pattern (1-64 hex chars)
+  -mx <hex>       : Mask for TXID (optional)
+  --prefix <n>    : Match first N bytes of TXID (1-32)
+  -nonce-offset N : Byte offset of nonce in tx (default: last 4 bytes)
+  -nonce-len N    : Number of nonce bytes (1-8, default: 4)
 ```
 
 ## Building

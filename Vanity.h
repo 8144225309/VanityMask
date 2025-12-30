@@ -74,7 +74,9 @@ public:
   VanitySearch(Secp256K1 *secp, std::vector<std::string> &prefix, std::string seed, int searchMode,
                bool useGpu,bool stop,std::string outputFile, bool useSSE,uint32_t maxFound,uint64_t rekey,
                bool caseSensitive,Point &startPubKey,bool paranoiacSeed, StegoTarget *stegoTarget = NULL,
-               bool sigMode = false, bool schnorrMode = false, Int *sigMsgHash = NULL, Int *sigPrivKey = NULL);
+               bool sigMode = false, bool schnorrMode = false, Int *sigMsgHash = NULL, Int *sigPrivKey = NULL,
+               bool txidMode = false, std::vector<uint8_t> rawTx = std::vector<uint8_t>(),
+               int nonceOffset = 0, int nonceLen = 4);
 
   void Search(int nbThread,std::vector<int> gpuId,std::vector<int> gridSize);
   void FindKeyCPU(TH_PARAM *p);
@@ -146,6 +148,12 @@ private:
   bool schnorrMode;
   Int sigMsgHash;
   Int sigPrivKey;
+
+  // TXID grinding mode
+  bool txidMode;
+  std::vector<uint8_t> rawTx;
+  int nonceOffset;
+  int nonceLen;
 
   Int beta;
   Int lambda;

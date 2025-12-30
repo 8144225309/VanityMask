@@ -86,7 +86,8 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
                            bool useGpu, bool stop, string outputFile, bool useSSE, uint32_t maxFound,
                            uint64_t rekey, bool caseSensitive, Point &startPubKey, bool paranoiacSeed,
                            StegoTarget *stegoTargetPtr,
-                           bool sigModeIn, bool schnorrModeIn, Int *sigMsgHashPtr, Int *sigPrivKeyPtr)
+                           bool sigModeIn, bool schnorrModeIn, Int *sigMsgHashPtr, Int *sigPrivKeyPtr,
+                           bool txidModeIn, std::vector<uint8_t> rawTxIn, int nonceOffsetIn, int nonceLenIn)
   :inputPrefixes(inputPrefixes) {
 
   this->secp = secp;
@@ -104,8 +105,8 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
   this->caseSensitive = caseSensitive;
   this->startPubKeySpecified = !startPubKey.isZero();
   
-  // Steganography mode
-  this->stegoMode = (stegoTargetPtr != NULL);
+  // Steganography mode (mask mode only, not sig or txid modes)
+  this->stegoMode = (stegoTargetPtr != NULL) && !sigModeIn && !txidModeIn;
   if (stegoTargetPtr) {
     memcpy(&this->stegoTarget, stegoTargetPtr, sizeof(StegoTarget));
   } else {
@@ -125,6 +126,12 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
   } else {
     this->sigPrivKey.SetInt32(0);
   }
+
+  // TXID grinding mode
+  this->txidMode = txidModeIn;
+  this->rawTx = rawTxIn;
+  this->nonceOffset = nonceOffsetIn;
+  this->nonceLen = nonceLenIn;
 
   lastRekey = 0;
   prefixes.clear();
@@ -149,6 +156,18 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
     searchType = P2PKH;  // Doesn't matter for mask mode, but needs to be set
     _difficulty = pow(2.0, stegoTarget.numBits);
     printf("Mask mode: Matching %d bits of pubkey X coordinate\n", stegoTarget.numBits);
+  } else if (sigMode) {
+    nbPrefix = 0;
+    onlyFull = false;
+    searchType = P2PKH;  // Doesn't matter for sig mode, but needs to be set
+    _difficulty = pow(2.0, stegoTarget.numBits);
+    printf("Signature mode: Matching %d bits of R.x coordinate\n", stegoTarget.numBits);
+  } else if (txidMode) {
+    nbPrefix = 0;
+    onlyFull = false;
+    searchType = P2PKH;  // Doesn't matter for txid mode, but needs to be set
+    _difficulty = pow(2.0, stegoTarget.numBits);
+    printf("TXID mode: Matching %d bits of transaction ID\n", stegoTarget.numBits);
   } else if (!hasPattern) {
 
     // No wildcard used, standard search
@@ -1598,11 +1617,22 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
   getGPUStartingKeys(thId, g.GetGroupSize(), nbThread, keys, p);
 
   // Setup GPU based on mode
-  if (stegoMode) {
+  if (txidMode) {
+    // TXID grinding mode - set target, mask, and raw tx
+    g.SetSearchMode(SEARCH_TXID);
+    g.SetTxidTarget(stegoTarget.value, stegoTarget.mask);
+    g.SetRawTx(rawTx.data(), (int)rawTx.size(), nonceOffset, nonceLen);
+    printf("TXID grinding mode enabled on GPU %d\n", ph->gpuId);
+  } else if (stegoMode) {
     // Steganography mode - set target and mask
     g.SetSearchMode(SEARCH_COMPRESSED);  // Use compressed for stego
     g.SetStegoTarget(stegoTarget.value, stegoTarget.mask);
-    printf("Steganography mode enabled on GPU %d\n", ph->gpuId);
+    printf("Mask mode enabled on GPU %d\n", ph->gpuId);
+  } else if (sigMode) {
+    // Signature R-value grinding mode - same kernel as stegoMode
+    g.SetSearchMode(SEARCH_COMPRESSED);  // Use compressed for sig mode
+    g.SetStegoTarget(stegoTarget.value, stegoTarget.mask);
+    printf("Signature mode enabled on GPU %d\n", ph->gpuId);
   } else {
     // Normal vanity search mode
     g.SetSearchMode(searchMode);
@@ -1632,8 +1662,10 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
       ph->rekeyRequest = false;
     }
 
-    // Call kernel - use stego version if in stego mode
-    if (stegoMode) {
+    // Call kernel based on mode
+    if (txidMode) {
+      ok = g.LaunchTxid(found);
+    } else if (stegoMode || sigMode) {
       ok = g.LaunchStego(found);
     } else {
       ok = g.Launch(found);
@@ -1642,9 +1674,62 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
     for(int i=0;i<(int)found.size() && !endOfSearch;i++) {
 
       ITEM it = found[i];
-      
-      if (stegoMode) {
-        // Steganography match - reconstruct and output the key
+
+      if (txidMode) {
+        // TXID grinding mode - display the found nonce and TXID
+        // Reconstruct 32-bit nonce from incr/endo
+        uint32_t nonce = ((uint32_t)(uint16_t)it.endo << 16) | (uint32_t)(uint16_t)it.incr;
+
+        // Extract TXID preview from hash field (first 20 bytes stored by GPU)
+        uint8_t *txidPreview = it.hash;
+
+        // Build full modified transaction with nonce inserted
+        std::vector<uint8_t> modifiedTx = rawTx;
+        for (int j = 0; j < nonceLen && j < 4; j++) {
+          modifiedTx[nonceOffset + j] = (nonce >> (j * 8)) & 0xFF;
+        }
+
+        // Convert TXID preview to hex string
+        char txidHex[41];
+        for (int j = 0; j < 20; j++) {
+          sprintf(txidHex + j * 2, "%02x", txidPreview[j]);
+        }
+        txidHex[40] = '\0';
+
+        // Output the result
+        printf("\n=== TXID MATCH FOUND ===\n");
+        printf("Nonce:      0x%08x (%u)\n", nonce, nonce);
+        printf("TXID:       %s...\n", txidHex);
+        printf("Nonce pos:  offset %d, %d bytes\n", nonceOffset, nonceLen);
+
+        // Convert modified tx to hex for output
+        char *modTxHex = new char[modifiedTx.size() * 2 + 1];
+        bytesToHex(modifiedTx.data(), (int)modifiedTx.size(), modTxHex);
+
+        // Show truncated tx hex if too long
+        if (modifiedTx.size() > 64) {
+          printf("Raw TX:     %.*s...%s (%zu bytes)\n", 32, modTxHex,
+                 modTxHex + (modifiedTx.size() * 2 - 32), modifiedTx.size());
+        } else {
+          printf("Raw TX:     %s\n", modTxHex);
+        }
+        printf("========================\n");
+
+        // Output to file if specified
+        string txidStr = "TXID:" + string(txidHex);
+        char nonceStr[32];
+        sprintf(nonceStr, "0x%08x", nonce);
+        output(txidStr, string(nonceStr), string(modTxHex));
+
+        delete[] modTxHex;
+
+        nbFoundKey++;
+        if (stopWhenFound) {
+          endOfSearch = true;
+        }
+
+      } else if (stegoMode || sigMode) {
+        // Steganography/Signature match - reconstruct and output the key
         // Order matters! increment -> endomorphism -> symmetric
         Int finalKey;
         finalKey.Set(&keys[it.thId]);
@@ -1754,10 +1839,16 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
     }
 
     if (ok) {
-      for (int i = 0; i < nbThread; i++) {
-        keys[i].Add((uint64_t)STEP_SIZE);
+      if (txidMode) {
+        // TXID mode: count nonces tried (1 per thread per kernel call)
+        counters[thId] += (uint64_t)nbThread;
+      } else {
+        // EC modes: update keys and count operations
+        for (int i = 0; i < nbThread; i++) {
+          keys[i].Add((uint64_t)STEP_SIZE);
+        }
+        counters[thId] += 6ULL * STEP_SIZE * nbThread; // Point + endo1 + endo2 + symetrics
       }
-      counters[thId] += 6ULL * STEP_SIZE * nbThread; // Point +  endo1 + endo2 + symetrics
     }
 
   }

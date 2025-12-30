@@ -39,6 +39,15 @@
 __constant__ uint64_t _stego_value[4];
 __constant__ uint64_t _stego_mask[4];
 
+// DEFINITION of TXID grinding constant memory
+__constant__ uint64_t _txid_target[4];
+__constant__ uint64_t _txid_mask[4];
+__constant__ uint8_t _raw_tx[4096];  // Max 4KB transaction
+__constant__ int _tx_len;
+__constant__ int _nonce_offset;
+__constant__ int _nonce_len;
+__constant__ uint64_t _txid_base_nonce;
+
 #include "GPUCompute.h"
 
 // ---------------------------------------------------------------------------------------
@@ -90,6 +99,137 @@ __global__ void comp_keys_stego(uint64_t *keys, uint32_t maxFound, uint32_t *fou
   int yPtr = xPtr + 4 * blockDim.x;
   ComputeKeysStego(keys + xPtr, keys + yPtr, maxFound, found);
 
+}
+
+// TXID grinding kernel - grinds nonce to match TXID pattern
+__global__ void grind_txid_kernel(uint32_t maxFound, uint32_t *found) {
+
+  uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+  // Calculate nonce for this thread
+  uint64_t nonce = _txid_base_nonce + tid;
+
+  // Copy raw tx to local memory and insert nonce
+  uint8_t tx[4096];
+  for (int i = 0; i < _tx_len; i++) {
+    tx[i] = _raw_tx[i];
+  }
+
+  // Insert nonce at offset (little-endian)
+  for (int i = 0; i < _nonce_len; i++) {
+    tx[_nonce_offset + i] = (uint8_t)((nonce >> (i * 8)) & 0xFF);
+  }
+
+  // ---- First SHA256 pass ----
+  uint32_t s1[8];
+  SHA256Initialize(s1);
+
+  int numFullBlocks = _tx_len / 64;
+  int remaining = _tx_len % 64;
+
+  // Process full 64-byte blocks
+  for (int b = 0; b < numFullBlocks; b++) {
+    uint32_t w[16];
+    for (int i = 0; i < 16; i++) {
+      int off = b * 64 + i * 4;
+      w[i] = ((uint32_t)tx[off] << 24) | ((uint32_t)tx[off+1] << 16) |
+             ((uint32_t)tx[off+2] << 8) | (uint32_t)tx[off+3];
+    }
+    SHA256Transform(s1, w);
+  }
+
+  // Final block with padding
+  uint32_t w[16];
+  memset(w, 0, sizeof(w));
+
+  // Copy remaining bytes
+  int off = numFullBlocks * 64;
+  for (int i = 0; i < remaining; i++) {
+    int wordIdx = i / 4;
+    int byteIdx = 3 - (i % 4);
+    w[wordIdx] |= ((uint32_t)tx[off + i]) << (byteIdx * 8);
+  }
+
+  // Add padding bit
+  int padWordIdx = remaining / 4;
+  int padByteIdx = 3 - (remaining % 4);
+  w[padWordIdx] |= (0x80u << (padByteIdx * 8));
+
+  // If remaining >= 56, we need two blocks
+  if (remaining >= 56) {
+    SHA256Transform(s1, w);
+    memset(w, 0, sizeof(w));
+  }
+
+  // Add length (in bits) to last two words
+  uint64_t bitLen = (uint64_t)_tx_len * 8;
+  w[14] = (uint32_t)(bitLen >> 32);
+  w[15] = (uint32_t)(bitLen & 0xFFFFFFFF);
+
+  SHA256Transform(s1, w);
+
+  // ---- Second SHA256 pass (hash of first hash) ----
+  uint32_t s2[8];
+  SHA256Initialize(s2);
+
+  // First hash is 32 bytes, fits in one block with padding
+  // Format: 32 bytes of hash + 0x80 + zeros + length (256 bits = 0x100)
+  w[0] = bswap32(s1[0]);
+  w[1] = bswap32(s1[1]);
+  w[2] = bswap32(s1[2]);
+  w[3] = bswap32(s1[3]);
+  w[4] = bswap32(s1[4]);
+  w[5] = bswap32(s1[5]);
+  w[6] = bswap32(s1[6]);
+  w[7] = bswap32(s1[7]);
+  w[8] = 0x80000000;  // Padding starts after 32 bytes
+  w[9] = 0;
+  w[10] = 0;
+  w[11] = 0;
+  w[12] = 0;
+  w[13] = 0;
+  w[14] = 0;
+  w[15] = 0x100;  // 256 bits = 32 bytes * 8
+
+  SHA256Transform(s2, w);
+
+  // Build txid array for comparison with displayed TXID order
+  // Displayed TXID byte 0 = SHA256 byte 31 (last byte)
+  // SHA256 stores big-endian, so s2[7] bits 7-0 = SHA256 byte 31
+  // For txid[0] byte 0 = SHA256 byte 31, we just use s2[] directly without bswap
+  uint64_t txid[4];
+  txid[0] = ((uint64_t)s2[6] << 32) | s2[7];  // TXID bytes 0-7 = SHA256 bytes 31..24
+  txid[1] = ((uint64_t)s2[4] << 32) | s2[5];  // TXID bytes 8-15 = SHA256 bytes 23..16
+  txid[2] = ((uint64_t)s2[2] << 32) | s2[3];  // TXID bytes 16-23 = SHA256 bytes 15..8
+  txid[3] = ((uint64_t)s2[0] << 32) | s2[1];  // TXID bytes 24-31 = SHA256 bytes 7..0
+
+  // Check against target/mask
+  bool match = true;
+  for (int i = 0; i < 4; i++) {
+    if ((txid[i] & _txid_mask[i]) != (_txid_target[i] & _txid_mask[i])) {
+      match = false;
+      break;
+    }
+  }
+
+  if (match) {
+    uint32_t pos = atomicAdd(found, 1);
+    if (pos < maxFound) {
+      // Store result: thread ID and nonce
+      found[pos * ITEM_SIZE32 + 1] = tid;
+      // Store nonce in the incr/endo fields
+      found[pos * ITEM_SIZE32 + 2] = (uint32_t)(nonce & 0xFFFFFFFF);
+      // Store first 20 bytes of displayed TXID (reversed from SHA256)
+      // SHA256 bytes 31,30,...,12 in little-endian order per word
+      uint32_t *hashPtr = &found[pos * ITEM_SIZE32 + 3];
+      // Each word needs byte reversal for display order
+      hashPtr[0] = s2[7];  // bytes 28-31, will be displayed as 31,30,29,28
+      hashPtr[1] = s2[6];  // bytes 24-27
+      hashPtr[2] = s2[5];  // bytes 20-23
+      hashPtr[3] = s2[4];  // bytes 16-19
+      hashPtr[4] = s2[3];  // bytes 12-15
+    }
+  }
 }
 
 //#define FULLCHECK
@@ -302,6 +442,10 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
   pattern = "";
   hasPattern = false;
   stegoMode = false;
+  txidMode = false;
+  txLen = 0;
+  txNonceOffset = 0;
+  txNonceLen = 4;
   inputPrefixLookUp = NULL;
 
 }
@@ -718,6 +862,164 @@ bool GPUEngine::LaunchStego(std::vector<ITEM> &found, bool spinWait) {
   }
 
   return callKernelStego();
+
+}
+
+// =============================================================================
+// TXID GRINDING MODE
+// =============================================================================
+
+void GPUEngine::SetTxidTarget(uint64_t *value, uint64_t *mask) {
+
+  cudaError_t err;
+
+  // Target/mask are already stored in display order by main.cpp
+  // (byte 0 = first byte of displayed TXID)
+  // Just copy directly to GPU constant memory
+
+  // Copy target value to constant memory
+  err = cudaMemcpyToSymbol(_txid_target, value, 4 * sizeof(uint64_t));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetTxidTarget value: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  // Copy mask to constant memory
+  err = cudaMemcpyToSymbol(_txid_mask, mask, 4 * sizeof(uint64_t));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetTxidTarget mask: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  txidMode = true;
+
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetTxidTarget: %s\n", cudaGetErrorString(err));
+  }
+
+}
+
+void GPUEngine::SetRawTx(uint8_t *tx, int txLenIn, int nonceOffsetIn, int nonceLenIn) {
+
+  cudaError_t err;
+
+  // Store values locally
+  txLen = txLenIn;
+  txNonceOffset = nonceOffsetIn;
+  txNonceLen = nonceLenIn;
+
+  // Copy raw tx to constant memory
+  if (txLenIn > 4096) {
+    printf("GPUEngine: SetRawTx: Transaction too large (%d > 4096)\n", txLenIn);
+    return;
+  }
+
+  err = cudaMemcpyToSymbol(_raw_tx, tx, txLenIn);
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetRawTx raw_tx: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  err = cudaMemcpyToSymbol(_tx_len, &txLenIn, sizeof(int));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetRawTx tx_len: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  err = cudaMemcpyToSymbol(_nonce_offset, &nonceOffsetIn, sizeof(int));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetRawTx nonce_offset: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  err = cudaMemcpyToSymbol(_nonce_len, &nonceLenIn, sizeof(int));
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetRawTx nonce_len: %s\n", cudaGetErrorString(err));
+    return;
+  }
+
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: SetRawTx: %s\n", cudaGetErrorString(err));
+  }
+
+}
+
+bool GPUEngine::callKernelTxid() {
+
+  // Reset nbFound
+  cudaMemset(outputPrefix, 0, 4);
+
+  // Call TXID grinding kernel
+  grind_txid_kernel <<< nbThread / nbThreadPerGroup, nbThreadPerGroup >>>
+    (maxFound, outputPrefix);
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: TXID Kernel: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+  return true;
+
+}
+
+bool GPUEngine::LaunchTxid(std::vector<ITEM> &found, bool spinWait) {
+
+  found.clear();
+
+  // Get the result
+  if (spinWait) {
+    cudaMemcpy(outputPrefixPinned, outputPrefix, outputSize, cudaMemcpyDeviceToHost);
+  } else {
+    cudaEvent_t evt;
+    cudaEventCreate(&evt);
+    cudaMemcpyAsync(outputPrefixPinned, outputPrefix, 4, cudaMemcpyDeviceToHost, 0);
+    cudaEventRecord(evt, 0);
+    while (cudaEventQuery(evt) == cudaErrorNotReady) {
+      Timer::SleepMillis(1);
+    }
+    cudaEventDestroy(evt);
+  }
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: LaunchTxid: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+
+  // Look for matches found
+  uint32_t nbFound = outputPrefixPinned[0];
+  if (nbFound > maxFound) {
+    if (!lostWarning) {
+      printf("\nWarning, %d items lost\n", (nbFound - maxFound));
+      lostWarning = true;
+    }
+    nbFound = maxFound;
+  }
+
+  // Copy results
+  cudaMemcpy(outputPrefixPinned, outputPrefix, nbFound * ITEM_SIZE + 4, cudaMemcpyDeviceToHost);
+
+  for (uint32_t i = 0; i < nbFound; i++) {
+    uint32_t *itemPtr = outputPrefixPinned + (i * ITEM_SIZE32 + 1);
+    ITEM it;
+    it.thId = itemPtr[0];
+    // For TXID mode, store full 32-bit nonce across incr/endo
+    uint32_t nonce = itemPtr[1];
+    it.incr = (int16_t)(nonce & 0xFFFF);
+    it.endo = (int16_t)((nonce >> 16) & 0xFFFF);
+    it.mode = false;
+    it.hash = (uint8_t *)(itemPtr + 2);
+    found.push_back(it);
+  }
+
+  // Update base nonce for next kernel call
+  static uint64_t baseNonce = 0;
+  baseNonce += nbThread;
+  cudaMemcpyToSymbol(_txid_base_nonce, &baseNonce, sizeof(uint64_t));
+
+  return callKernelTxid();
 
 }
 
