@@ -43,6 +43,7 @@ Point _2Gn;
 static void ModInvOrder(Int *result, Int *a, Int *n) {
   // Extended Euclidean Algorithm
   // Returns a^(-1) mod n
+  // Fixed: Use ModMulK1order instead of Mult to avoid overflow
   Int u, v, x1, x2, q, r, temp;
 
   u.Set(n);
@@ -56,16 +57,17 @@ static void ModInvOrder(Int *result, Int *a, Int *n) {
     q.Div(&v, &r);  // q = u/v, r = u%v
 
     // x1, x2 = x2, x1 - q*x2
+    // Use modular multiplication to avoid 512-bit overflow
     temp.Set(&q);
-    temp.Mult(&x2);
-    temp.Neg();
-    temp.Add(n);  // Make positive
-    temp.Mod(n);
-    temp.Add(&x1);
-    temp.Mod(n);
+    temp.ModMulK1order(&x2);  // temp = q * x2 mod n
+
+    // x1 - temp (mod n)
+    Int newX2;
+    newX2.Set(&x1);
+    newX2.ModSubK1order(&temp);  // newX2 = x1 - q*x2 mod n
 
     x1.Set(&x2);
-    x2.Set(&temp);
+    x2.Set(&newX2);
 
     // u, v = v, r
     u.Set(&v);
@@ -74,7 +76,10 @@ static void ModInvOrder(Int *result, Int *a, Int *n) {
 
   if (v.IsOne()) {
     result->Set(&x2);
-    result->Mod(n);
+    // Ensure result is positive and in range [0, n-1]
+    if (result->IsNegative()) {
+      result->Add(n);
+    }
   } else {
     result->SetInt32(0);  // No inverse exists
   }
@@ -1932,6 +1937,12 @@ void VanitySearch::Search(int nbThread,std::vector<int> gpuId,std::vector<int> g
   nbCPUThread = nbThread;
   nbGPUThread = (useGpu?(int)gpuId.size():0);
   nbFoundKey = 0;
+
+  // TXID mode is GPU-only - disable CPU threads to prevent counter inflation
+  // (CPU threads do standard EC key search, not TXID grinding)
+  if (txidMode) {
+    nbCPUThread = 0;
+  }
 
   memset(counters,0,sizeof(counters));
 

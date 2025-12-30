@@ -119,7 +119,8 @@ inline void generatePrefixMask(uint64_t* mask, int numBytes) {
 }
 
 // Parse hex as byte string (left-to-right) for TXID mode
-// Stores bytes starting at limbs[0] byte 0 (display order)
+// Stores bytes in MSB-first order within each 64-bit limb to match GPU txid[] layout
+// Byte 0 -> limbs[0] bits 63-56, Byte 1 -> limbs[0] bits 55-48, etc.
 inline int parseHexAsDisplayBytes(const char* hex, uint64_t* limbs) {
     memset(limbs, 0, 4 * sizeof(uint64_t));
     if (!hex) return 0;
@@ -130,26 +131,33 @@ inline int parseHexAsDisplayBytes(const char* hex, uint64_t* limbs) {
     if (len % 2 == 1) return -1;  // Must be even length
 
     int numBytes = (int)(len / 2);
-    uint8_t* bytes = (uint8_t*)limbs;
 
     for (int i = 0; i < numBytes; i++) {
         int hi = hexCharToInt(hex[i * 2]);
         int lo = hexCharToInt(hex[i * 2 + 1]);
         if (hi < 0 || lo < 0) return -1;
-        bytes[i] = (uint8_t)((hi << 4) | lo);
+        uint8_t byte = (uint8_t)((hi << 4) | lo);
+
+        // Place byte i at MSB-first position within the appropriate limb
+        // Byte 0 goes to limbs[0] bits 63-56, byte 7 goes to limbs[0] bits 7-0
+        // Byte 8 goes to limbs[1] bits 63-56, etc.
+        int limb = i / 8;
+        int byteInLimb = 7 - (i % 8);  // MSB-first within each 64-bit limb
+        limbs[limb] |= ((uint64_t)byte << (byteInLimb * 8));
     }
     return numBytes;
 }
 
 // Generate prefix mask in display order for TXID mode
-// Sets first N bytes starting at limbs[0] byte 0
+// Sets first N bytes in MSB-first order within each 64-bit limb to match GPU txid[] layout
 inline void generateMaskDisplay(uint64_t* mask, int numBytes) {
     memset(mask, 0, 4 * sizeof(uint64_t));
     if (numBytes <= 0 || numBytes > 32) return;
 
-    uint8_t* bytes = (uint8_t*)mask;
     for (int i = 0; i < numBytes; i++) {
-        bytes[i] = 0xFF;
+        int limb = i / 8;
+        int byteInLimb = 7 - (i % 8);  // MSB-first within each 64-bit limb
+        mask[limb] |= ((uint64_t)0xFF << (byteInLimb * 8));
     }
 }
 
@@ -176,10 +184,14 @@ inline void limbsToHex(const uint64_t* limbs, char* out) {
 }
 
 // Convert limbs to hex string in display order (byte 0 first)
+// Matches the MSB-first format used by parseHexAsDisplayBytes and generateMaskDisplay
 inline void limbsToHexDisplay(const uint64_t* limbs, char* out) {
-    const uint8_t* bytes = (const uint8_t*)limbs;
-    for (int i = 0; i < 32; i++) {
-        sprintf(out + i * 2, "%02x", bytes[i]);
+    int pos = 0;
+    for (int i = 0; i < 4; i++) {
+        for (int b = 7; b >= 0; b--) {
+            sprintf(out + pos, "%02x", (int)((limbs[i] >> (b * 8)) & 0xFF));
+            pos += 2;
+        }
     }
     out[64] = '\0';
 }

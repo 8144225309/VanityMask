@@ -174,14 +174,16 @@ __global__ void grind_txid_kernel(uint32_t maxFound, uint32_t *found) {
 
   // First hash is 32 bytes, fits in one block with padding
   // Format: 32 bytes of hash + 0x80 + zeros + length (256 bits = 0x100)
-  w[0] = bswap32(s1[0]);
-  w[1] = bswap32(s1[1]);
-  w[2] = bswap32(s1[2]);
-  w[3] = bswap32(s1[3]);
-  w[4] = bswap32(s1[4]);
-  w[5] = bswap32(s1[5]);
-  w[6] = bswap32(s1[6]);
-  w[7] = bswap32(s1[7]);
+  // Note: s1[] is already in big-endian format (SHA256's native output),
+  // and SHA256Transform expects big-endian input, so pass directly without bswap32
+  w[0] = s1[0];
+  w[1] = s1[1];
+  w[2] = s1[2];
+  w[3] = s1[3];
+  w[4] = s1[4];
+  w[5] = s1[5];
+  w[6] = s1[6];
+  w[7] = s1[7];
   w[8] = 0x80000000;  // Padding starts after 32 bytes
   w[9] = 0;
   w[10] = 0;
@@ -194,14 +196,16 @@ __global__ void grind_txid_kernel(uint32_t maxFound, uint32_t *found) {
   SHA256Transform(s2, w);
 
   // Build txid array for comparison with displayed TXID order
-  // Displayed TXID byte 0 = SHA256 byte 31 (last byte)
-  // SHA256 stores big-endian, so s2[7] bits 7-0 = SHA256 byte 31
-  // For txid[0] byte 0 = SHA256 byte 31, we just use s2[] directly without bswap
+  // TXID = reverse(SHA256 output), so TXID byte 0 = SHA256 byte 31
+  // SHA256 state s2[] is in big-endian format (standard SHA256 output)
+  // s2[7] = hash bytes 28-31 as big-endian 0xef94b74c for hash ...ef94b74c
+  // bswap32 converts to TXID byte order: 0x4cb794ef gives TXID starting with 4c
+  // We place TXID bytes 0-3 in high 32 bits of txid[0] for MSB-first comparison
   uint64_t txid[4];
-  txid[0] = ((uint64_t)s2[6] << 32) | s2[7];  // TXID bytes 0-7 = SHA256 bytes 31..24
-  txid[1] = ((uint64_t)s2[4] << 32) | s2[5];  // TXID bytes 8-15 = SHA256 bytes 23..16
-  txid[2] = ((uint64_t)s2[2] << 32) | s2[3];  // TXID bytes 16-23 = SHA256 bytes 15..8
-  txid[3] = ((uint64_t)s2[0] << 32) | s2[1];  // TXID bytes 24-31 = SHA256 bytes 7..0
+  txid[0] = ((uint64_t)bswap32(s2[7]) << 32) | bswap32(s2[6]);  // TXID bytes 0-7
+  txid[1] = ((uint64_t)bswap32(s2[5]) << 32) | bswap32(s2[4]);  // TXID bytes 8-15
+  txid[2] = ((uint64_t)bswap32(s2[3]) << 32) | bswap32(s2[2]);  // TXID bytes 16-23
+  txid[3] = ((uint64_t)bswap32(s2[1]) << 32) | bswap32(s2[0]);  // TXID bytes 24-31
 
   // Check against target/mask
   bool match = true;
@@ -219,15 +223,14 @@ __global__ void grind_txid_kernel(uint32_t maxFound, uint32_t *found) {
       found[pos * ITEM_SIZE32 + 1] = tid;
       // Store nonce in the incr/endo fields
       found[pos * ITEM_SIZE32 + 2] = (uint32_t)(nonce & 0xFFFFFFFF);
-      // Store first 20 bytes of displayed TXID (reversed from SHA256)
-      // SHA256 bytes 31,30,...,12 in little-endian order per word
+      // Store first 20 bytes of displayed TXID
+      // s2[] is in native little-endian format, same as target/mask
       uint32_t *hashPtr = &found[pos * ITEM_SIZE32 + 3];
-      // Each word needs byte reversal for display order
-      hashPtr[0] = s2[7];  // bytes 28-31, will be displayed as 31,30,29,28
-      hashPtr[1] = s2[6];  // bytes 24-27
-      hashPtr[2] = s2[5];  // bytes 20-23
-      hashPtr[3] = s2[4];  // bytes 16-19
-      hashPtr[4] = s2[3];  // bytes 12-15
+      hashPtr[0] = s2[7];  // TXID bytes 0-3
+      hashPtr[1] = s2[6];  // TXID bytes 4-7
+      hashPtr[2] = s2[5];  // TXID bytes 8-11
+      hashPtr[3] = s2[4];  // TXID bytes 12-15
+      hashPtr[4] = s2[3];  // TXID bytes 16-19
     }
   }
 }
