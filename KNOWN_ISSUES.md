@@ -101,12 +101,33 @@ s match: True
 |------|--------|------------|--------|----------|
 | Mask-16 | `dead` | 2^16 | PASS | Python (ecdsa) |
 | Mask-24 | `deadbe` | 2^24 | PASS | Python (ecdsa) |
+| Mask-24 | `cafe42` | 2^24 | PASS | Python (ecdsa) + Regtest |
 
 ### Signature Mode Tests (2024-12-30)
 
 | Test | Prefix | Difficulty | R.x | s-value | Result |
 |------|--------|------------|-----|---------|--------|
 | Sig-16 | `dead` | 2^16 | PASS | PASS | **FIXED** |
+
+### Bitcoin Regtest Integration Tests (2024-12-30)
+
+Full cycle test using Bitcoin Core v28.1.0 in regtest mode:
+
+| Step | Description | Result | Details |
+|------|-------------|--------|---------|
+| 1 | Grind pubkey with CAFE42 prefix | PASS | Privkey: `3B558166...`, X: `CAFE4277...` |
+| 2 | Derive P2WPKH address | PASS | `bcrt1qrkgklj5nq36g6svjr2r0hyk7d5hm36j8avr327` |
+| 3 | Fund address (0.001 BTC) | PASS | TXID: `f306ee81...` |
+| 4 | Verify scriptPubKey hides data | PASS | `00141d916fca...` (hash only) |
+| 5 | Import privkey to wallet | PASS | Descriptor: `wpkh(cPa3E6...)` |
+| 6 | Spend from ground address | PASS | TXID: `7e0d959e...` |
+| 7 | Verify pubkey in witness | PASS | `02CAFE4277791C0B63...` revealed |
+
+**Key Observations:**
+- Ground pubkey X coordinate (`CAFE42...`) not visible in scriptPubKey (hash-protected)
+- Pubkey revealed in witness only when spending
+- Full compatibility with Bitcoin Core signing
+- ECDSA signatures work normally (enables signature R.x grinding on spends)
 
 ---
 
