@@ -1,0 +1,140 @@
+{
+  "description": "VanityMask Test Vectors - Known-good test cases for verification",
+  "version": "1.0",
+  "last_updated": "2024-12-31",
+
+  "secp256k1_constants": {
+    "N": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+    "Gx": "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+    "Gy": "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8",
+    "P": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F"
+  },
+
+  "fixed_test_values": {
+    "z_standard": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+    "d_standard": "0000000000000000000000000000000000000000000000000000000000000001",
+    "p_standard": "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+    "z_zeros": "0000000000000000000000000000000000000000000000000000000000000000",
+    "z_max": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140"
+  },
+
+  "minimal_transaction": {
+    "description": "Minimal valid transaction structure (59 bytes)",
+    "hex": "0100000001000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100000000000000000000000000",
+    "nonce_offset": 55,
+    "nonce_len": 4,
+    "notes": "nLockTime at bytes 55-58"
+  },
+
+  "mask_mode_vectors": [
+    {
+      "test_id": "MASK-VEC-001",
+      "description": "Private key 1 -> Generator point",
+      "privkey": "0000000000000000000000000000000000000000000000000000000000000001",
+      "expected_pubkey_x": "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+      "expected_pubkey_y_parity": "even"
+    },
+    {
+      "test_id": "MASK-VEC-002",
+      "description": "Private key 2 -> 2G",
+      "privkey": "0000000000000000000000000000000000000000000000000000000000000002",
+      "expected_pubkey_x": "C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5",
+      "expected_pubkey_y_parity": "even"
+    },
+    {
+      "test_id": "MASK-VEC-003",
+      "description": "Known test key",
+      "privkey": "E67A80686C46B8176C4608F41F3AC4AD6D81A5D9FF4C0EF433C4BCE0668F3D5C",
+      "expected_pubkey_x_prefix": "DEADBEEF",
+      "notes": "From mask02_output.txt benchmark"
+    }
+  ],
+
+  "signature_mode_vectors": [
+    {
+      "test_id": "SIG-VEC-001",
+      "description": "ECDSA with standard test values",
+      "mode": "ecdsa",
+      "z": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+      "d": "0000000000000000000000000000000000000000000000000000000000000001",
+      "notes": "Use to verify s = k^-1 * (z + r*d) mod N formula"
+    },
+    {
+      "test_id": "SIG-VEC-002",
+      "description": "Known ECDSA signature from verification",
+      "mode": "ecdsa",
+      "nonce_k": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+      "z": "0000000000000000000000000000000000000000000000000000000000000001",
+      "d": "0000000000000000000000000000000000000000000000000000000000000001",
+      "expected_r_prefix": "0102",
+      "notes": "R = k*G, r = R.x"
+    },
+    {
+      "test_id": "SIG-VEC-003",
+      "description": "Schnorr signature test",
+      "mode": "schnorr",
+      "z": "0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20",
+      "d": "0000000000000000000000000000000000000000000000000000000000000001",
+      "p": "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+      "notes": "Schnorr s = k + e*d mod N (no inverse)"
+    }
+  ],
+
+  "txid_mode_vectors": [
+    {
+      "test_id": "TXID-VEC-001",
+      "description": "Minimal transaction with known TXID",
+      "raw_tx": "0100000001000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100000000000000000000000000",
+      "nonce": "00000000",
+      "nonce_offset": 55,
+      "nonce_len": 4,
+      "notes": "TXID = SHA256(SHA256(tx)), reversed for display"
+    }
+  ],
+
+  "bip340_tagged_hashes": {
+    "TapTweak_tag_hash": "E80FE1639C9CA050E3AF1B39C143C63E429CBCEB15D940FBB5C5A1F4AF57C5E9",
+    "BIP0340_challenge_tag_hash": "7BB52D7A9FEF58323EB1BF7A407DB382D2F3F2D81BB1224F49FE518F6D98A81F",
+    "notes": "tag_hash = SHA256(tag), used as: SHA256(tag_hash || tag_hash || data)"
+  },
+
+  "error_test_cases": [
+    {
+      "test_id": "ERR-VEC-001",
+      "mode": "mask",
+      "args": ["-mask", "-tx", ""],
+      "expected_error_contains": "target"
+    },
+    {
+      "test_id": "ERR-VEC-002",
+      "mode": "mask",
+      "args": ["-mask", "-tx", "GGG"],
+      "expected_error_contains": "invalid"
+    },
+    {
+      "test_id": "ERR-VEC-003",
+      "mode": "sig",
+      "args": ["-sig", "-tx", "DEAD", "-d", "0000000000000000000000000000000000000000000000000000000000000001"],
+      "expected_error_contains": "hash"
+    },
+    {
+      "test_id": "ERR-VEC-004",
+      "mode": "txid",
+      "args": ["-txid", "-tx", "DEAD"],
+      "expected_error_contains": "raw"
+    }
+  ],
+
+  "expected_durations_rtx4090": {
+    "description": "Expected grinding times on RTX 4090",
+    "ec_rate_gkeys_per_sec": 27,
+    "txid_rate_mkeys_per_sec": 10,
+    "estimates": {
+      "8_bit": {"ec_seconds": 0.00000001, "txid_seconds": 0.000026},
+      "16_bit": {"ec_seconds": 0.000002, "txid_seconds": 0.0065},
+      "24_bit": {"ec_seconds": 0.0006, "txid_seconds": 1.7},
+      "32_bit": {"ec_seconds": 0.16, "txid_seconds": 430},
+      "40_bit": {"ec_seconds": 41, "txid_seconds": 110000}
+    }
+  }
+}

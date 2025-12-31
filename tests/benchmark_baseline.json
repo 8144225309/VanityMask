@@ -1,0 +1,136 @@
+{
+  "description": "VanityMask Performance Baselines - RTX 4090 Reference",
+  "version": "1.0",
+  "last_updated": "2024-12-31",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "cuda_version": "13.0",
+  "grid_size": "1024x128",
+
+  "throughput_baselines": {
+    "mask": {
+      "mode": "EC scalar multiplication",
+      "rate_gkeys_per_sec": 27.0,
+      "rate_min": 25.0,
+      "rate_max": 31.0,
+      "gpu_utilization_target": 95,
+      "gpu_utilization_min": 90,
+      "notes": "Pure EC operations, compute-bound"
+    },
+    "sig_ecdsa": {
+      "mode": "EC scalar multiplication + s-value computation",
+      "rate_gkeys_per_sec": 27.0,
+      "rate_min": 25.0,
+      "rate_max": 31.0,
+      "gpu_utilization_target": 95,
+      "gpu_utilization_min": 90,
+      "notes": "Same kernel as mask, CPU computes s-value"
+    },
+    "sig_schnorr": {
+      "mode": "EC scalar multiplication + BIP340 s-value",
+      "rate_gkeys_per_sec": 27.0,
+      "rate_min": 25.0,
+      "rate_max": 31.0,
+      "gpu_utilization_target": 95,
+      "gpu_utilization_min": 90,
+      "notes": "Same kernel as mask, simpler s computation (no inverse)"
+    },
+    "txid": {
+      "mode": "Double SHA256",
+      "rate_mkeys_per_sec": 10.0,
+      "rate_min": 8.0,
+      "rate_max": 14.0,
+      "gpu_utilization_target": 62,
+      "gpu_utilization_min": 55,
+      "notes": "Memory-bound (4KB buffer per thread), ~2700x slower than EC"
+    },
+    "vanity": {
+      "mode": "EC + SHA256 + RIPEMD160 + Base58",
+      "rate_gkeys_per_sec": 2.0,
+      "rate_min": 1.5,
+      "rate_max": 3.0,
+      "gpu_utilization_target": 95,
+      "gpu_utilization_min": 85,
+      "notes": "Inherited from original VanitySearch"
+    }
+  },
+
+  "time_baselines": {
+    "description": "Expected time to find match (median)",
+    "mask_32bit": {
+      "expected_seconds": 0.16,
+      "p99_seconds": 0.8,
+      "difficulty": 4294967296
+    },
+    "mask_40bit": {
+      "expected_seconds": 41,
+      "p99_seconds": 205,
+      "difficulty": 1099511627776
+    },
+    "sig_32bit": {
+      "expected_seconds": 0.16,
+      "p99_seconds": 0.8,
+      "difficulty": 4294967296
+    },
+    "txid_16bit": {
+      "expected_seconds": 0.0065,
+      "p99_seconds": 0.033,
+      "difficulty": 65536
+    },
+    "txid_24bit": {
+      "expected_seconds": 1.7,
+      "p99_seconds": 8.4,
+      "difficulty": 16777216
+    }
+  },
+
+  "regression_thresholds": {
+    "throughput_decrease_warning": 0.10,
+    "throughput_decrease_critical": 0.20,
+    "time_increase_warning": 0.25,
+    "time_increase_critical": 0.50,
+    "gpu_utilization_drop_warning": 0.10,
+    "notes": "Warn if metrics deviate by these percentages from baseline"
+  },
+
+  "benchmark_test_matrix": {
+    "quick": {
+      "description": "Quick benchmarks for CI",
+      "tests": [
+        {"mode": "mask", "bits": 32, "iterations": 5},
+        {"mode": "sig_ecdsa", "bits": 32, "iterations": 5},
+        {"mode": "txid", "bits": 16, "iterations": 5}
+      ],
+      "expected_duration_minutes": 2
+    },
+    "full": {
+      "description": "Full benchmark suite",
+      "tests": [
+        {"mode": "mask", "bits": 32, "iterations": 20},
+        {"mode": "mask", "bits": 40, "iterations": 5},
+        {"mode": "sig_ecdsa", "bits": 32, "iterations": 20},
+        {"mode": "sig_schnorr", "bits": 32, "iterations": 10},
+        {"mode": "txid", "bits": 16, "iterations": 10},
+        {"mode": "txid", "bits": 24, "iterations": 5}
+      ],
+      "expected_duration_minutes": 30
+    }
+  },
+
+  "historical_results": {
+    "2024-12-29": {
+      "mask_32bit_median_seconds": 0.158,
+      "sig_32bit_median_seconds": 0.162,
+      "txid_16bit_median_seconds": 0.007,
+      "gpu_rate_gkeys_per_sec": 27.5,
+      "gpu_utilization_avg": 97
+    },
+    "2024-12-30": {
+      "mask_32bit_median_seconds": 0.155,
+      "sig_32bit_median_seconds": 0.159,
+      "txid_16bit_median_seconds": 0.006,
+      "gpu_rate_gkeys_per_sec": 27.8,
+      "gpu_utilization_avg": 96,
+      "notes": "After s-value bug fix"
+    }
+  }
+}
