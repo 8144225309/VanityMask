@@ -86,13 +86,36 @@ static void ModInvOrder(Int *result, Int *a, Int *n) {
 }
 
 // ----------------------------------------------------------------------------
+// Helper: BIP-340/341 Tagged Hash
+// result = SHA256(SHA256(tag) || SHA256(tag) || data)
+// ----------------------------------------------------------------------------
+static void TaggedHash(const char* tag, const uint8_t* data, size_t dataLen, uint8_t* result) {
+  // Compute tag hash
+  uint8_t tagHash[32];
+  sha256((uint8_t*)tag, (int)strlen(tag), tagHash);
+
+  // Build buffer: tagHash || tagHash || data
+  size_t bufLen = 64 + dataLen;
+  uint8_t* buf = new uint8_t[bufLen];
+  memcpy(buf, tagHash, 32);
+  memcpy(buf + 32, tagHash, 32);
+  memcpy(buf + 64, data, dataLen);
+
+  // Final hash
+  sha256(buf, (int)bufLen, result);
+  delete[] buf;
+}
+
+// ----------------------------------------------------------------------------
 
 VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,string seed,int searchMode,
                            bool useGpu, bool stop, string outputFile, bool useSSE, uint32_t maxFound,
                            uint64_t rekey, bool caseSensitive, Point &startPubKey, bool paranoiacSeed,
                            StegoTarget *stegoTargetPtr,
                            bool sigModeIn, bool schnorrModeIn, Int *sigMsgHashPtr, Int *sigPrivKeyPtr,
-                           bool txidModeIn, std::vector<uint8_t> rawTxIn, int nonceOffsetIn, int nonceLenIn)
+                           Int *sigPubKeyXPtr,
+                           bool txidModeIn, std::vector<uint8_t> rawTxIn, int nonceOffsetIn, int nonceLenIn,
+                           bool taprootModeIn)
   :inputPrefixes(inputPrefixes) {
 
   this->secp = secp;
@@ -110,8 +133,8 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
   this->caseSensitive = caseSensitive;
   this->startPubKeySpecified = !startPubKey.isZero();
   
-  // Steganography mode (mask mode only, not sig or txid modes)
-  this->stegoMode = (stegoTargetPtr != NULL) && !sigModeIn && !txidModeIn;
+  // Steganography mode (mask mode only, not sig, txid, or taproot modes)
+  this->stegoMode = (stegoTargetPtr != NULL) && !sigModeIn && !txidModeIn && !taprootModeIn;
   if (stegoTargetPtr) {
     memcpy(&this->stegoTarget, stegoTargetPtr, sizeof(StegoTarget));
   } else {
@@ -131,6 +154,14 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
   } else {
     this->sigPrivKey.SetInt32(0);
   }
+  if (sigPubKeyXPtr) {
+    this->sigPubKeyX.Set(sigPubKeyXPtr);
+  } else {
+    this->sigPubKeyX.SetInt32(0);
+  }
+
+  // Taproot post-tweak grinding mode
+  this->taprootMode = taprootModeIn;
 
   // TXID grinding mode
   this->txidMode = txidModeIn;
@@ -1638,6 +1669,15 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
     g.SetSearchMode(SEARCH_COMPRESSED);  // Use compressed for sig mode
     g.SetStegoTarget(stegoTarget.value, stegoTarget.mask);
     printf("Signature mode enabled on GPU %d\n", ph->gpuId);
+  } else if (taprootMode) {
+    // Taproot post-tweak grinding mode
+    // NOTE: Current GPU kernel matches P.x, not Q.x
+    // The CPU output handler computes Q = P + hash(P)*G and reports Q.x
+    // For true post-tweak matching, GPU kernel would need modification
+    g.SetSearchMode(SEARCH_COMPRESSED);
+    g.SetStegoTarget(stegoTarget.value, stegoTarget.mask);
+    printf("Taproot mode enabled on GPU %d (matches P.x, computes Q.x)\n", ph->gpuId);
+    printf("NOTE: For full post-tweak grinding, GPU kernel modification needed\n");
   } else {
     // Normal vanity search mode
     g.SetSearchMode(searchMode);
@@ -1766,43 +1806,83 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           Int nonce_k;
           nonce_k.Set(&finalKey);
 
-          // For BIP340 Schnorr: if R.y is odd, negate k
+          // For BIP340 Schnorr: if R.y is odd, negate k to get even R.y
           if (schnorrMode && pubKey.y.IsOdd()) {
             nonce_k.Neg();
             nonce_k.Add(&secp->order);
             pubKey = secp->ComputePublicKey(&nonce_k);  // Recompute with negated k
           }
 
-          // Compute s = k^-1 * (z + r*d) mod n
-          // where z = message hash, r = R.x mod n, d = signing private key
-          Int r_val, k_inv, temp, s_val;
+          Int r_val, s_val;
 
-          // r = R.x mod n
+          // r = R.x (for both ECDSA and Schnorr)
           r_val.Set(&pubKey.x);
-          r_val.Mod(&secp->order);
 
-          // k^-1 mod n (using helper function for curve order)
-          ModInvOrder(&k_inv, &nonce_k, &secp->order);
+          if (schnorrMode) {
+            // BIP-340 Schnorr signature: s = k + e*d mod n
+            // where e = SHA256("BIP0340/challenge" || R.x || P.x || m)
 
-          // temp = r * d mod n
-          temp.Set(&r_val);
-          temp.ModMulK1order(&sigPrivKey);
+            // Build challenge data: R.x || P.x || m (96 bytes)
+            uint8_t challengeData[96];
+            uint8_t rBytes[32], pBytes[32], mBytes[32];
 
-          // temp = z + r*d mod n
-          temp.ModAddK1order(&sigMsgHash);
+            // R.x (32 bytes, big-endian)
+            pubKey.x.Get32Bytes(rBytes);
+            memcpy(challengeData, rBytes, 32);
 
-          // s = k^-1 * (z + r*d) mod n
-          s_val.Set(&k_inv);
-          s_val.ModMulK1order(&temp);
+            // P.x (signing pubkey X, 32 bytes)
+            sigPubKeyX.Get32Bytes(pBytes);
+            memcpy(challengeData + 32, pBytes, 32);
 
-          // BIP 146: Low-s normalization
-          // If s > order/2, then s = order - s
-          Int halfOrder;
-          halfOrder.Set(&secp->order);
-          halfOrder.ShiftR(1);
-          if (s_val.IsGreater(&halfOrder)) {
-            s_val.Neg();
-            s_val.Add(&secp->order);
+            // m (message hash, 32 bytes)
+            sigMsgHash.Get32Bytes(mBytes);
+            memcpy(challengeData + 64, mBytes, 32);
+
+            // e = TaggedHash("BIP0340/challenge", R.x || P.x || m)
+            uint8_t eBytes[32];
+            TaggedHash("BIP0340/challenge", challengeData, 96, eBytes);
+
+            Int e;
+            e.Set32Bytes(eBytes);
+            e.Mod(&secp->order);
+
+            // s = k + e*d mod n (no modular inverse needed!)
+            s_val.Set(&e);
+            s_val.ModMulK1order(&sigPrivKey);
+            s_val.ModAddK1order(&nonce_k);
+
+            // No low-s normalization for BIP-340 Schnorr
+
+          } else {
+            // ECDSA signature: s = k^-1 * (z + r*d) mod n
+
+            // r mod n (ECDSA requires this)
+            r_val.Mod(&secp->order);
+
+            Int k_inv, temp;
+
+            // k^-1 mod n
+            ModInvOrder(&k_inv, &nonce_k, &secp->order);
+
+            // temp = r * d mod n
+            temp.Set(&r_val);
+            temp.ModMulK1order(&sigPrivKey);
+
+            // temp = z + r*d mod n
+            temp.ModAddK1order(&sigMsgHash);
+
+            // s = k^-1 * (z + r*d) mod n
+            s_val.Set(&k_inv);
+            s_val.ModMulK1order(&temp);
+
+            // BIP 146: Low-s normalization for ECDSA
+            Int halfOrder;
+            halfOrder.Set(&secp->order);
+            halfOrder.ShiftR(1);
+            if (s_val.IsGreater(&halfOrder)) {
+              s_val.Neg();
+              s_val.Add(&secp->order);
+            }
           }
 
           // Output the signature
@@ -1818,6 +1898,40 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           // Also output to file if specified
           string sigInfo = "SIG:r=" + r_val.GetBase16() + ",s=" + s_val.GetBase16();
           output(sigInfo, nonce_k.GetBase16(), r_val.GetBase16());
+
+        } else if (taprootMode) {
+          // Taproot post-tweak grinding mode
+          // We found P where Q = P + hash(P)*G has the target prefix
+          // Output both P (internal key) and Q (output key)
+
+          // Compute tweak: t = TaggedHash("TapTweak", P.x)
+          uint8_t pxBytes[32];
+          pubKey.x.Get32Bytes(pxBytes);
+
+          uint8_t tweakBytes[32];
+          TaggedHash("TapTweak", pxBytes, 32, tweakBytes);
+
+          Int tweak;
+          tweak.Set32Bytes(tweakBytes);
+          tweak.Mod(&secp->order);
+
+          // Compute Q = P + t*G
+          Point tG = secp->ComputePublicKey(&tweak);
+          Point Q = secp->AddDirect(pubKey, tG);
+
+          string privHex = finalKey.GetBase16();
+          string pXHex = pubKey.x.GetBase16();
+          string qXHex = Q.x.GetBase16();
+
+          printf("\n=== TAPROOT KEY FOUND ===\n");
+          printf("Private key (d):     %s\n", privHex.c_str());
+          printf("Internal key (P.x):  %s\n", pXHex.c_str());
+          printf("Tweak (t):           %s\n", tweak.GetBase16().c_str());
+          printf("Output key (Q.x):    %s\n", qXHex.c_str());
+          printf("=========================\n");
+
+          // Output: Q.x is what goes in scriptPubKey, but we output P info for spending
+          output("TAPROOT:Q=" + qXHex + ",P=" + pXHex, secp->GetPrivAddress(true, finalKey), privHex);
 
         } else {
           // Pure steganography mode - just output the key

@@ -41,7 +41,8 @@ void printUsage() {
   printf("             [-nosse] [-r rekey] [-check] [-kp] [-sp startPubKey]\n");
   printf("             [-rp privkey partialkeyfile] [prefix]\n");
   printf("             [-mask -tx <target_hex> [-mx <mask_hex>] [--prefix <n>]]\n");
-  printf("             [-sig -tx <target_hex> -z <msghash> -d <privkey> [--schnorr]]\n\n");
+  printf("             [-sig -tx <target_hex> -z <msghash> -d <privkey> [--schnorr] [-p <pubkey_x>]]\n");
+  printf("             [-taproot -tx <target_hex> [--prefix <n>]]\n\n");
   printf(" prefix: prefix to search (Can contains wildcard '?' or '*')\n");
   printf(" -v: Print version\n");
   printf(" -u: Search uncompressed addresses\n");
@@ -77,7 +78,12 @@ void printUsage() {
   printf(" -z <hex>: Message hash to sign (32-byte hex)\n");
   printf(" -d <hex>: Signing private key (32-byte hex)\n");
   printf(" --schnorr: Use BIP340 Schnorr signatures instead of ECDSA\n");
+  printf(" -p <hex>: Signing pubkey X (auto-derived if omitted)\n");
   printf(" --prefix <n>: Match first N bytes of R.x (auto-generates mask)\n");
+  printf("\nTaproot post-tweak grinding mode:\n");
+  printf(" -taproot: Enable Taproot mode (grind P until Q = P + hash(P)*G has target prefix)\n");
+  printf(" -tx <hex>: Target Q.x value (tweaked output key)\n");
+  printf(" --prefix <n>: Match first N bytes of Q.x\n");
   printf("\nTXID grinding mode:\n");
   printf(" -txid: Enable TXID grinding mode\n");
   printf(" -raw <hex>: Raw transaction hex\n");
@@ -437,7 +443,11 @@ int main(int argc, char* argv[]) {
   bool sigMode = false;
   string sigMsgHashHex = "";
   string sigPrivKeyHex = "";
+  string sigPubKeyHex = "";  // For Schnorr challenge hash
   bool schnorrMode = false;
+
+  // Taproot post-tweak grinding mode
+  bool taprootMode = false;
 
   // TXID grinding mode variables
   bool txidMode = false;
@@ -602,8 +612,15 @@ int main(int argc, char* argv[]) {
       a++;
       sigPrivKeyHex = string(argv[a]);
       a++;
+    } else if (strcmp(argv[a], "-p") == 0) {
+      a++;
+      sigPubKeyHex = string(argv[a]);
+      a++;
     } else if (strcmp(argv[a], "--schnorr") == 0) {
       schnorrMode = true;
+      a++;
+    } else if (strcmp(argv[a], "-taproot") == 0) {
+      taprootMode = true;
       a++;
     } else if (strcmp(argv[a], "-txid") == 0) {
       txidMode = true;
@@ -706,6 +723,7 @@ int main(int argc, char* argv[]) {
   // Signature mode setup
   Int sigMsgHash;
   Int sigPrivKey;
+  Int sigPubKeyX;
   if (sigMode) {
     if (stegoTargetHex.empty()) {
       printf("Error: Signature mode requires -tx <target_hex> for R.x value\n");
@@ -749,6 +767,21 @@ int main(int argc, char* argv[]) {
     if (sigPrivKey.IsZero()) {
       printf("Error: Invalid private key in -d\n");
       exit(-1);
+    }
+
+    // Parse signing pubkey X for Schnorr (required for challenge hash)
+    if (schnorrMode) {
+      if (sigPubKeyHex.empty()) {
+        // Auto-derive from private key if not provided
+        Point pubPoint = secp->ComputePublicKey(&sigPrivKey);
+        sigPubKeyX.Set(&pubPoint.x);
+      } else {
+        sigPubKeyX.SetBase16((char *)sigPubKeyHex.c_str());
+        if (sigPubKeyX.IsZero() && sigPubKeyHex.length() > 0) {
+          printf("Error: Invalid pubkey X in -p\n");
+          exit(-1);
+        }
+      }
     }
 
     char hexBuf[65];
@@ -862,11 +895,67 @@ int main(int argc, char* argv[]) {
     printf("==========================\n\n");
   }
 
+  // Taproot post-tweak grinding mode setup
+  if (taprootMode) {
+    if (stegoTargetHex.empty()) {
+      printf("Error: Taproot mode requires -tx <target_hex> for output key prefix\n");
+      exit(-1);
+    }
+
+    // Parse target Q.x value (post-tweak output key)
+    int bytes = parseHexToLimbsMSB(stegoTargetHex.c_str(), stegoTarget.value);
+    if (bytes < 0) {
+      printf("Error: Invalid hex in -tx\n");
+      exit(-1);
+    }
+
+    // Generate or parse mask
+    if (stegoPrefixBytes > 0) {
+      generatePrefixMask(stegoTarget.mask, stegoPrefixBytes);
+    } else if (!stegoMaskHex.empty()) {
+      parseHexToLimbsMSB(stegoMaskHex.c_str(), stegoTarget.mask);
+    } else {
+      generatePrefixMask(stegoTarget.mask, bytes);
+    }
+    stegoTarget.numBits = countMaskBits(stegoTarget.mask);
+
+    char hexBuf[65];
+    printf("\n=== TAPROOT POST-TWEAK GRINDING MODE ===\n");
+    limbsToHex(stegoTarget.value, hexBuf);
+    printf("Target Q.x: %s\n", hexBuf);
+    limbsToHex(stegoTarget.mask, hexBuf);
+    printf("Mask:       %s\n", hexBuf);
+    printf("Bits:       %d (difficulty 2^%d)\n", stegoTarget.numBits, stegoTarget.numBits);
+    printf("Output:     Q = P + hash(P)*G (tweaked output key)\n");
+    printf("Note:       ~2x slower than standard mask mode\n");
+    printf("==========================================\n\n");
+
+    // TODO: Taproot mode requires GPU kernel modification to compute Q = P + hash(P)*G
+    // and match Q.x instead of P.x. This is not yet implemented.
+    printf("ERROR: Taproot post-tweak grinding requires GPU kernel modification.\n");
+    printf("       GPU currently matches P.x, not Q.x = (P + hash(P)*G).x\n");
+    printf("\n");
+    printf("WORKAROUND: Use rawtr() with standard -mask mode:\n");
+    printf("  1. VanitySearch -mask -tx CAFE42 --prefix 3 -gpu -stop\n");
+    printf("  2. Use rawtr(KEY) descriptor (no tweak, KEY.x visible directly)\n");
+    printf("  3. Sign with external Schnorr signer\n");
+    printf("\n");
+    printf("For Schnorr signature grinding, use:\n");
+    printf("  VanitySearch -sig --schnorr -tx PREFIX -z MSG -d KEY -p PUBKEY -gpu -stop\n");
+    printf("\n");
+    printf("See P2TR_IMPLEMENTATION_PLAN.md for GPU kernel modification details.\n");
+    exit(-1);
+
+    searchMode = SEARCH_STEGO;
+  }
+
   VanitySearch *v = new VanitySearch(secp, prefix, seed, searchMode, gpuEnable, stop, outputFile, sse,
     maxFound, rekey, caseSensitive, startPuKey, paranoiacSeed,
-    (stegoMode || sigMode || txidMode) ? &stegoTarget : NULL,
+    (stegoMode || sigMode || txidMode || taprootMode) ? &stegoTarget : NULL,
     sigMode, schnorrMode, sigMode ? &sigMsgHash : NULL, sigMode ? &sigPrivKey : NULL,
-    txidMode, rawTxBytes, nonceOffset, nonceLen);
+    (sigMode && schnorrMode) ? &sigPubKeyX : NULL,
+    txidMode, rawTxBytes, nonceOffset, nonceLen,
+    taprootMode);
   v->Search(nbCPUThread,gpuId,gridSize);
 
   return 0;
