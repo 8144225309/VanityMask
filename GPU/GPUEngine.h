@@ -31,7 +31,8 @@ static const char *searchModes[] = {"Compressed","Uncompressed","Compressed or U
 #define STEP_SIZE 1024
 
 // Number of thread per block
-#define ITEM_SIZE 28
+// Note: Increased from 28 to 40 for taproot debug output (10 uint32 slots)
+#define ITEM_SIZE 40
 #define ITEM_SIZE32 (ITEM_SIZE/4)
 #define _64K 65536
 
@@ -72,6 +73,9 @@ public:
   void SetStegoTarget(uint64_t *value, uint64_t *mask);
   bool LaunchStego(std::vector<ITEM> &found, bool spinWait=false);
 
+  // Taproot mode
+  bool LaunchTaproot(std::vector<ITEM> &found, bool spinWait=false);
+
   // TXID grinding mode
   void SetTxidTarget(uint64_t *value, uint64_t *mask);
   void SetRawTx(uint8_t *tx, int txLen, int nonceOffset, int nonceLen);
@@ -87,6 +91,7 @@ private:
 
   bool callKernel();
   bool callKernelStego();
+  bool callKernelTaproot();
   bool callKernelTxid();
   static void ComputeIndex(std::vector<int> &s, int depth, int n);
   static void Browse(FILE *f,int depth, int max, int s);
@@ -119,6 +124,7 @@ private:
   int txNonceLen;
   int numMP;
   int numCores;
+  int32_t taprootIter;  // Iteration counter for taproot key reconstruction
 
 };
 

@@ -48,6 +48,9 @@ __constant__ int _nonce_offset;
 __constant__ int _nonce_len;
 __constant__ uint64_t _txid_base_nonce;
 
+// Taproot iteration counter - tracks kernel calls for key reconstruction
+__constant__ int32_t _taproot_iter;
+
 #include "GPUCompute.h"
 
 // ---------------------------------------------------------------------------------------
@@ -98,6 +101,15 @@ __global__ void comp_keys_stego(uint64_t *keys, uint32_t maxFound, uint32_t *fou
   int xPtr = (blockIdx.x*blockDim.x) * 8;
   int yPtr = xPtr + 4 * blockDim.x;
   ComputeKeysStego(keys + xPtr, keys + yPtr, maxFound, found);
+
+}
+
+// Taproot kernel - grinds for post-tweak pubkey Q.x prefix
+__global__ void comp_keys_taproot(uint64_t *keys, uint32_t maxFound, uint32_t *found) {
+
+  int xPtr = (blockIdx.x*blockDim.x) * 8;
+  int yPtr = xPtr + 4 * blockDim.x;
+  ComputeKeysTaproot(keys + xPtr, keys + yPtr, maxFound, found);
 
 }
 
@@ -446,6 +458,7 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
   hasPattern = false;
   stegoMode = false;
   txidMode = false;
+  taprootIter = 0;
   txLen = 0;
   txNonceOffset = 0;
   txNonceLen = 4;
@@ -865,6 +878,93 @@ bool GPUEngine::LaunchStego(std::vector<ITEM> &found, bool spinWait) {
   }
 
   return callKernelStego();
+
+}
+
+// =============================================================================
+// TAPROOT MODE
+// =============================================================================
+
+bool GPUEngine::callKernelTaproot() {
+
+  // Reset nbFound
+  cudaMemset(outputPrefix, 0, 4);
+
+  // Copy current iteration count to GPU constant memory
+  cudaMemcpyToSymbol(_taproot_iter, &taprootIter, sizeof(int32_t));
+
+  // Increment for next call (key = base + tid + taprootIter, so we need value before this kernel)
+  taprootIter++;
+
+  // Call taproot kernel
+  comp_keys_taproot <<< nbThread / nbThreadPerGroup, nbThreadPerGroup >>>
+    (inputKey, maxFound, outputPrefix);
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: Taproot Kernel: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+  return true;
+
+}
+
+bool GPUEngine::LaunchTaproot(std::vector<ITEM> &found, bool spinWait) {
+
+  found.clear();
+
+  // Get the result
+  if (spinWait) {
+    cudaMemcpy(outputPrefixPinned, outputPrefix, outputSize, cudaMemcpyDeviceToHost);
+  } else {
+    cudaEvent_t evt;
+    cudaEventCreate(&evt);
+    cudaMemcpyAsync(outputPrefixPinned, outputPrefix, 4, cudaMemcpyDeviceToHost, 0);
+    cudaEventRecord(evt, 0);
+    while (cudaEventQuery(evt) == cudaErrorNotReady) {
+      Timer::SleepMillis(1);
+    }
+    cudaEventDestroy(evt);
+  }
+
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("GPUEngine: LaunchTaproot: %s\n", cudaGetErrorString(err));
+    return false;
+  }
+
+  // Look for matches found
+  uint32_t nbFound = outputPrefixPinned[0];
+  if (nbFound > maxFound) {
+    if (!lostWarning) {
+      printf("\nWarning, %d items lost\n", (nbFound - maxFound));
+      lostWarning = true;
+    }
+    nbFound = maxFound;
+  }
+
+  // Copy results
+  cudaMemcpy(outputPrefixPinned, outputPrefix, nbFound * ITEM_SIZE + 4, cudaMemcpyDeviceToHost);
+
+  for (uint32_t i = 0; i < nbFound; i++) {
+    uint32_t *itemPtr = outputPrefixPinned + (i * ITEM_SIZE32 + 1);
+    ITEM it;
+    // Same format as stego: [0]=tid, [1]=packed(incr|mode|endo), [2..]=Qx data
+    it.thId = itemPtr[0];
+    int16_t *ptr = (int16_t *)&(itemPtr[1]);
+    it.endo = ptr[0] & 0x7FFF;
+    it.mode = (ptr[0] & 0x8000) != 0;
+    it.incr = ptr[1];
+    it.hash = (uint8_t *)(itemPtr + 2);
+
+    // Debug: print raw item data
+    printf("\nDEBUG RAW ITEM: itemPtr[0]=%u itemPtr[1]=0x%08x\n", itemPtr[0], itemPtr[1]);
+    printf("  Parsed: tid=%u incr=%d endo=%d mode=%d\n", it.thId, it.incr, it.endo, it.mode?1:0);
+
+    found.push_back(it);
+  }
+
+  return callKernelTaproot();
 
 }
 

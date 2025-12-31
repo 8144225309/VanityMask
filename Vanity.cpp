@@ -204,6 +204,12 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
     searchType = P2PKH;  // Doesn't matter for txid mode, but needs to be set
     _difficulty = pow(2.0, stegoTarget.numBits);
     printf("TXID mode: Matching %d bits of transaction ID\n", stegoTarget.numBits);
+  } else if (taprootMode) {
+    nbPrefix = 0;
+    onlyFull = false;
+    searchType = P2PKH;  // Doesn't matter for taproot mode, but needs to be set
+    _difficulty = pow(2.0, stegoTarget.numBits);
+    printf("Taproot mode: Matching %d bits of tweaked output key Q.x\n", stegoTarget.numBits);
   } else if (!hasPattern) {
 
     // No wildcard used, standard search
@@ -1710,6 +1716,8 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
     // Call kernel based on mode
     if (txidMode) {
       ok = g.LaunchTxid(found);
+    } else if (taprootMode) {
+      ok = g.LaunchTaproot(found);
     } else if (stegoMode || sigMode) {
       ok = g.LaunchStego(found);
     } else {
@@ -1773,8 +1781,8 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           endOfSearch = true;
         }
 
-      } else if (stegoMode || sigMode) {
-        // Steganography/Signature match - reconstruct and output the key
+      } else if (stegoMode || sigMode || taprootMode) {
+        // Steganography/Signature/Taproot match - reconstruct and output the key
         // Order matters! increment -> endomorphism -> symmetric
         Int finalKey;
         finalKey.Set(&keys[it.thId]);
@@ -1782,6 +1790,12 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
         // Step 1: Add increment (always the absolute value - the actual offset)
         int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
         finalKey.Add((uint64_t)absIncr);
+
+        // For taproot mode: GPU starting points are at keys[i] + groupSize/2
+        // So we need to add the center offset
+        if (taprootMode) {
+          finalKey.Add((uint64_t)(g.GetGroupSize() / 2));
+        }
 
         // Step 2: Apply endomorphism multiplication
         // If endo=1, we matched beta*x, so key = (base+incr)*lambda
@@ -1901,13 +1915,11 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
 
         } else if (taprootMode) {
           // Taproot post-tweak grinding mode
-          // We found P where Q = P + hash(P)*G has the target prefix
-          // Output both P (internal key) and Q (output key)
+          // We found P where Q = P + hash("TapTweak", P.x)*G has the target prefix
 
           // Compute tweak: t = TaggedHash("TapTweak", P.x)
           uint8_t pxBytes[32];
           pubKey.x.Get32Bytes(pxBytes);
-
           uint8_t tweakBytes[32];
           TaggedHash("TapTweak", pxBytes, 32, tweakBytes);
 
@@ -1915,7 +1927,7 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           tweak.Set32Bytes(tweakBytes);
           tweak.Mod(&secp->order);
 
-          // Compute Q = P + t*G
+          // Compute Q = P + t*G (output key)
           Point tG = secp->ComputePublicKey(&tweak);
           Point Q = secp->AddDirect(pubKey, tG);
 
@@ -2052,9 +2064,9 @@ void VanitySearch::Search(int nbThread,std::vector<int> gpuId,std::vector<int> g
   nbGPUThread = (useGpu?(int)gpuId.size():0);
   nbFoundKey = 0;
 
-  // TXID mode is GPU-only - disable CPU threads to prevent counter inflation
-  // (CPU threads do standard EC key search, not TXID grinding)
-  if (txidMode) {
+  // TXID and Taproot modes are GPU-only - disable CPU threads
+  // (CPU threads don't compute taproot tweak or TXID hash)
+  if (txidMode || taprootMode) {
     nbCPUThread = 0;
   }
 

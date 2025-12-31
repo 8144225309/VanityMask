@@ -797,3 +797,266 @@ __device__ void ComputeKeysComp(uint64_t *startx, uint64_t *starty, prefix_t *sP
   Store256A(starty, py);
 
 }
+
+// -----------------------------------------------------------------------------------------
+// TAPROOT MODE: Post-tweak pubkey grinding
+// Computes Q = P + hash("TapTweak" || P.x)*G and checks Q.x prefix
+// -----------------------------------------------------------------------------------------
+
+// Modular addition: r = a + b mod p (using r = -((-a) - b))
+__device__ void ModAdd256(uint64_t* r, uint64_t* a, uint64_t* b) {
+  uint64_t neg_a[4], tmp[4];
+  ModNeg256(neg_a, a);
+  ModSub256(tmp, neg_a, b);
+  ModNeg256(r, tmp);
+}
+
+// -----------------------------------------------------------------------------------------
+// Curve order n for secp256k1 (for scalar reduction)
+// n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+// Stored in little-endian limb order: n[0] = LSB, n[3] = MSB
+// -----------------------------------------------------------------------------------------
+__device__ __constant__ uint64_t SECP256K1_ORDER[4] = {
+  0xBFD25E8CD0364141ULL,  // n[0] - least significant
+  0xBAAEDCE6AF48A03BULL,  // n[1]
+  0xFFFFFFFFFFFFFFFEULL,  // n[2]
+  0xFFFFFFFFFFFFFFFFULL   // n[3] - most significant
+};
+
+// Compare scalar with curve order n
+// Returns: -1 if scalar < n, 0 if scalar == n, 1 if scalar > n
+__device__ int CompareWithOrder(uint64_t scalar[4]) {
+  // Compare from MSB to LSB
+  for (int i = 3; i >= 0; i--) {
+    if (scalar[i] > SECP256K1_ORDER[i]) return 1;
+    if (scalar[i] < SECP256K1_ORDER[i]) return -1;
+  }
+  return 0;  // Equal
+}
+
+// Subtract curve order: result = scalar - n (assumes scalar >= n)
+__device__ void SubtractOrder(uint64_t result[4], uint64_t scalar[4]) {
+  uint64_t borrow = 0;
+  for (int i = 0; i < 4; i++) {
+    uint64_t sub = SECP256K1_ORDER[i] + borrow;
+    borrow = (sub < borrow) ? 1 : 0;  // Overflow in adding borrow
+    borrow += (scalar[i] < sub) ? 1 : 0;  // Borrow from subtraction
+    result[i] = scalar[i] - sub;
+  }
+}
+
+// Reduce scalar modulo curve order n
+// If scalar >= n, computes scalar - n (single subtraction is sufficient since hash < 2n)
+__device__ void ModReduceOrder(uint64_t scalar[4]) {
+  if (CompareWithOrder(scalar) >= 0) {
+    uint64_t reduced[4];
+    SubtractOrder(reduced, scalar);
+    scalar[0] = reduced[0];
+    scalar[1] = reduced[1];
+    scalar[2] = reduced[2];
+    scalar[3] = reduced[3];
+  }
+}
+
+// Point doubling in affine coordinates: (Rx, Ry) = 2*(Px, Py)
+// IMPORTANT: Handles aliasing (Rx==Px and/or Ry==Py) by using local copies
+__device__ void PointDoubleAffine(uint64_t Rx[4], uint64_t Ry[4],
+                                  uint64_t Px[4], uint64_t Py[4]) {
+  uint64_t s[4], s2[4], tmp[4], num[4];
+  uint64_t denom[5];  // _ModInv requires 5-element array (320 bits)
+  uint64_t localPx[4], localPy[4];
+
+  // Copy inputs to avoid aliasing issues when Rx==Px or Ry==Py
+  Load256(localPx, Px);
+  Load256(localPy, Py);
+
+  // s = 3*Px^2 / (2*Py) mod p (a=0 for secp256k1)
+  _ModSqr(num, localPx);
+  Load256(tmp, num);
+  ModAdd256(num, num, tmp);
+  ModAdd256(num, num, tmp);      // num = 3*Px^2
+
+  ModAdd256(denom, localPy, localPy);      // denom = 2*Py
+  denom[4] = 0;  // Clear 5th element for _ModInv
+
+  // Use proven _ModInv instead of custom chain
+  _ModInv(denom);
+  _ModMult(s, num, denom);
+
+  // Rx = s^2 - 2*Px
+  _ModSqr(s2, s);
+  Load256(Rx, s2);
+  ModSub256(Rx, localPx);
+  ModSub256(Rx, localPx);
+
+  // Ry = s*(Px - Rx) - Py
+  ModSub256(tmp, localPx, Rx);
+  _ModMult(Ry, s, tmp);
+  ModSub256(Ry, localPy);
+}
+
+// Point addition in affine coordinates: (Rx, Ry) = (Ax, Ay) + (Bx, By)
+// IMPORTANT: Handles aliasing (Rx==Ax, Ry==Ay, etc.) by using local copies
+__device__ void PointAddAffine(uint64_t Rx[4], uint64_t Ry[4],
+                               uint64_t Ax[4], uint64_t Ay[4],
+                               uint64_t Bx[4], uint64_t By[4]) {
+  uint64_t dx[5];  // _ModInv requires 5-element array (320 bits)
+  uint64_t dy[4], s[4], s2[4];
+  uint64_t localAx[4], localAy[4], localBx[4], localBy[4];
+
+  // Copy inputs to avoid aliasing issues
+  Load256(localAx, Ax);
+  Load256(localAy, Ay);
+  Load256(localBx, Bx);
+  Load256(localBy, By);
+
+  // s = (By - Ay) / (Bx - Ax) mod p
+  ModSub256(dy, localBy, localAy);
+  ModSub256(dx, localBx, localAx);
+  dx[4] = 0;  // Clear 5th element for _ModInv
+
+  // Use the proven _ModInv instead of custom chain
+  _ModInv(dx);
+  _ModMult(s, dy, dx);
+
+  // Rx = s^2 - Ax - Bx
+  _ModSqr(s2, s);
+  Load256(Rx, s2);
+  ModSub256(Rx, localAx);
+  ModSub256(Rx, localBx);
+
+  // Ry = s*(Ax - Rx) - Ay
+  ModSub256(dy, localAx, Rx);
+  _ModMult(Ry, s, dy);
+  ModSub256(Ry, localAy);
+}
+
+// Scalar multiplication: result = scalar * G using double-and-add
+__device__ void ScalarMultG(uint64_t Rx[4], uint64_t Ry[4], uint64_t scalar[4]) {
+  bool isInfinity = true;
+  uint64_t curX[4] = { Gx[0][0], Gx[0][1], Gx[0][2], Gx[0][3] };
+  uint64_t curY[4] = { Gy[0][0], Gy[0][1], Gy[0][2], Gy[0][3] };
+
+  // Double-and-add from LSB to MSB
+  for (int bit = 0; bit < 256; bit++) {
+    int wordIdx = bit / 64;
+    int bitIdx = bit % 64;
+
+    if ((scalar[wordIdx] >> bitIdx) & 1ULL) {
+      if (isInfinity) {
+        Load256(Rx, curX);
+        Load256(Ry, curY);
+        isInfinity = false;
+      } else {
+        PointAddAffine(Rx, Ry, Rx, Ry, curX, curY);
+      }
+    }
+
+    if (bit < 255) {
+      PointDoubleAffine(curX, curY, curX, curY);
+    }
+  }
+
+  if (isInfinity) {
+    Rx[0] = 0; Rx[1] = 0; Rx[2] = 0; Rx[3] = 0;
+    Ry[0] = 0; Ry[1] = 0; Ry[2] = 0; Ry[3] = 0;
+  }
+}
+
+// Check if Qx matches stego target (uses _stego_value and _stego_mask from constant memory)
+__device__ bool CheckTaprootMatch(uint64_t Qx[4]) {
+  for (int i = 0; i < 4; i++) {
+    if ((Qx[i] & _stego_mask[i]) != (_stego_value[i] & _stego_mask[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Taproot compute kernel: Q = P + hash("TapTweak" || P.x) * G
+// Simplified taproot kernel - processes just 1 point per thread to avoid timeout
+// The scalar multiplication is very slow (256 iterations), so we minimize per-thread work
+__device__ void ComputeKeysTaproot(uint64_t *startx, uint64_t *starty,
+                                   uint32_t maxFound, uint32_t *out) {
+
+  uint64_t px[4], py[4];
+
+  // Taproot-specific
+  uint32_t tweakHash[8];
+  uint64_t t_scalar[4];
+  uint64_t tGx[4], tGy[4];
+  uint64_t Qx[4], Qy[4];
+
+  // Load starting key (this is the point P for this thread)
+  __syncthreads();
+  Load256A(px, startx);
+  Load256A(py, starty);
+
+  // Compute taproot output key: Q = P + hash(P)*G
+  // Step 1: t = tagged_hash("TapTweak", P.x)
+  SHA256_TapTweak(tweakHash, px);
+  HashToScalar256(t_scalar, tweakHash);
+
+  // Step 1.5: Reduce t_scalar mod curve order n (required for correct scalar mult)
+  // SHA256 output can be >= n, must reduce before computing t*G
+  ModReduceOrder(t_scalar);
+
+  // Step 2: tG = t * G (scalar multiplication)
+  ScalarMultG(tGx, tGy, t_scalar);
+
+  // Step 3: Q = P + tG (point addition)
+  PointAddAffine(Qx, Qy, px, py, tGx, tGy);
+
+  // Step 4: Check if Q.x matches target prefix
+  if (CheckTaprootMatch(Qx)) {
+    uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+    uint32_t pos = atomicAdd(out, 1);
+    if (pos < maxFound) {
+      out[pos*ITEM_SIZE32 + 1] = tid;
+      // Bit 15 = mode (taproot=1), bits 0-14 = iteration counter
+      out[pos*ITEM_SIZE32 + 2] = (uint32_t)((_taproot_iter << 16) | (1 << 15));
+      // Store P.x MSB (the internal key we're tweaking)
+      out[pos*ITEM_SIZE32 + 3] = (uint32_t)(px[3] >> 32);
+      out[pos*ITEM_SIZE32 + 4] = (uint32_t)(px[3]);
+      // Remaining slots available for future use
+    }
+  }
+
+  // Update starting point: P = P + G (simple increment for next batch)
+  // This is much faster than full scalar mult - just one point addition
+  // Formula: R = P + G
+  //   s = (G.y - P.y) / (G.x - P.x)
+  //   R.x = s^2 - P.x - G.x
+  //   R.y = s * (P.x - R.x) - P.y
+  uint64_t dy[4], _s[4], _p2[4];
+  uint64_t oldPx[4], oldPy[4];  // Save original P before modification
+  Load256(oldPx, px);
+  Load256(oldPy, py);
+
+  ModSub256(dy, Gy[0], py);     // dy = G.y - P.y
+  uint64_t dx[5];  // _ModInv requires 5-element array (320 bits)
+  ModSub256(dx, Gx[0], px);     // dx = G.x - P.x
+  dx[4] = 0;  // Clear 5th element for _ModInv
+
+  // Inline modular inverse for single point
+  uint64_t inv[5];  // _ModInv requires 5-element array (320 bits)
+  Load256(inv, dx);
+  inv[4] = 0;  // Clear 5th element for _ModInv
+  _ModInv(inv);
+
+  _ModMult(_s, dy, inv);        // s = (G.y - P.y) / (G.x - P.x)
+  _ModSqr(_p2, _s);             // _p2 = s^2
+
+  ModSub256(px, _p2, oldPx);    // px = s^2 - P.x (use saved oldPx)
+  ModSub256(px, Gx[0]);         // px = s^2 - P.x - G.x = R.x
+
+  ModSub256(py, oldPx, px);     // py = P.x - R.x (use saved oldPx, not Gx!)
+  _ModMult(py, _s);             // py = s * (P.x - R.x)
+  ModSub256(py, oldPy);         // py = s * (P.x - R.x) - P.y = R.y
+
+  // Store updated point for next kernel call
+  __syncthreads();
+  Store256A(startx, px);
+  Store256A(starty, py);
+
+}
