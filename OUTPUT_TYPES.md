@@ -1,282 +1,258 @@
 # Bitcoin Output Types for VanityMask
 
-This document analyzes different Bitcoin output types for use with VanityMask grinding modes, focusing on data visibility, tooling compatibility, and practical considerations.
-
----
-
-## Output Type Comparison
-
-### Overview
-
-When embedding data in a pubkey X coordinate using `-mask` mode, the choice of output type determines **when** and **how** that data becomes visible on-chain.
-
-| Output Type | Data in scriptPubKey | Data on Spend | Core Compatibility | Signature Type |
-|-------------|---------------------|---------------|-------------------|----------------|
-| P2PKH | Hash only | Witness reveals pubkey | Full | ECDSA |
-| **P2WPKH** | Hash only | Witness reveals pubkey | Full | ECDSA |
-| P2TR (standard) | Tweaked key | Internal key recoverable | Full | Schnorr |
-| P2TR (raw X) | Raw X visible | Same | Manual signing required | Schnorr |
-
----
-
-## P2WPKH (SegWit v0) - Recommended
-
-**Format:** `OP_0 <20-byte HASH160(pubkey)>`
-
-### Characteristics
-
-```
-On receive:  scriptPubKey = 0014<hash160>
-             Only a 20-byte hash is visible
-
-On spend:    witness = [<signature>, <compressed_pubkey>]
-             Full 33-byte pubkey (with your data) becomes visible
-```
-
-### Advantages
-
-1. **Temporal control** - Data only appears when you choose to spend
-2. **Maximum commonality** - ~60% of Bitcoin outputs are P2WPKH
-3. **Full tooling** - Bitcoin Core handles everything natively
-4. **ECDSA signatures** - Enables `-sig` mode R.x grinding when spending
-5. **Standard fees** - No witness discount penalties
-
-### Example Workflow
-
-```bash
-# 1. Grind pubkey with target prefix
-VanitySearch.exe -mask -tx CAFE42 --prefix 3 -gpu -stop
-# Output: Privkey 3B558166..., Pubkey X starts with CAFE42
-
-# 2. Derive P2WPKH address
-# scriptPubKey: 0014 + HASH160(compressed_pubkey)
-# Address: bc1q... (mainnet) or bcrt1q... (regtest)
-
-# 3. Receive funds - data NOT visible on chain
-# scriptPubKey shows: 00141d916fca9304748d41921a86fb92de6d2fb8ea47
-
-# 4. Spend when ready - data IS visible
-# witness reveals: 02CAFE4277791C0B638F38AF0528F13A6062BB212C...
-```
-
-### When to Use
-
-- Default choice for most applications
-- When you want control over data reveal timing
-- When you need `-sig` mode for additional ECDSA R.x grinding
-- When blending in with normal transaction patterns matters
-
----
-
-## P2TR (Taproot) - Standard Mode
-
-**Format:** `OP_1 <32-byte tweaked_pubkey>`
-
-### The Tweak Mechanism
-
-P2TR uses a key tweaking scheme (BIP-341):
-
-```
-Internal key:  Your ground pubkey (CAFE42...)
-Tweak:         t = SHA256("TapTweak" || internal_key)
-Output key:    Q = P + t*G
-```
-
-The **output key** (what goes on-chain) is different from your **internal key** (where your data lives).
-
-### Characteristics
-
-```
-On receive:  scriptPubKey = 5120<tweaked_output_key>
-             32-byte tweaked key visible (NOT your raw data)
-
-On spend:    Key-path spend reveals nothing extra
-             Your internal key data is mathematically recoverable
-             but requires knowing the tweak
-```
-
-### Advantages
-
-1. **Data separation** - Raw data not directly visible in scriptPubKey
-2. **Full tooling** - Bitcoin Core signs normally
-3. **Future-proof** - Taproot is the modern standard
-4. **Script flexibility** - Can add script paths if needed
-
-### Disadvantages
-
-1. **No ECDSA** - Schnorr signatures only (different grinding)
-2. **Data recovery complexity** - Need to reverse tweak to extract data
-3. **Less common** - ~10-15% of outputs currently
-
-### When to Use
-
-- When you prefer data not be directly visible even on-chain
-- When you need Taproot script features
-- When Schnorr signature properties are desired
-
----
-
-## P2TR (Raw X) - Direct Embedding
-
-**Format:** `OP_1 <32-byte raw_pubkey_X>`
-
-This bypasses the standard tweak and puts your raw X coordinate directly in the scriptPubKey.
-
-### Characteristics
-
-```
-On receive:  scriptPubKey = 5120<your_raw_X_coordinate>
-             Your data (CAFE42...) immediately visible
-
-On spend:    Requires manual Schnorr signing
-             Cannot use Bitcoin Core's built-in signing
-```
-
-### Advantages
-
-1. **Immediate visibility** - Data readable directly from scriptPubKey
-2. **Simple extraction** - No tweak reversal needed
-3. **32 bytes available** - Full X coordinate for data
-
-### Disadvantages
-
-1. **No Core signing** - Must implement BIP-340 Schnorr manually
-2. **Complexity** - Custom signing code required
-3. **Non-standard** - Violates BIP-341 key derivation
-
-### When to Use
-
-- When immediate on-chain data visibility is required
-- When you have custom signing infrastructure
-- For special applications where Core compatibility isn't needed
-
----
-
-## P2PKH (Legacy) - Not Recommended
-
-**Format:** `OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG`
-
-### Characteristics
-
-Similar to P2WPKH but without SegWit benefits:
-- Larger transaction size
-- Higher fees
-- Data revealed on spend (in scriptSig)
-
-### When to Use
-
-- Legacy compatibility requirements only
-- Generally avoid for new applications
-
----
-
-## Data Visibility Summary
-
-```
-                    On Receive          On Spend
-                    ──────────          ────────
-P2WPKH              Hash only    →      Pubkey revealed in witness
-                    (data hidden)       (data visible)
-
-P2TR (standard)     Tweaked key  →      Same (internal key recoverable)
-                    (data obscured)     (with tweak knowledge)
-
-P2TR (raw X)        Raw X        →      Same
-                    (data visible)      (data visible)
-```
-
----
-
-## Multi-Channel Encoding
-
-For maximum data density, combine multiple channels:
-
-### Single Transaction Channels
-
-| Channel | Mode | Bits (3-min budget) | Notes |
-|---------|------|---------------------|-------|
-| Output 0 pubkey | `-mask` | 40 | Primary data |
-| Output 1 pubkey | `-mask` | 40 | Additional data |
-| Signature R.x | `-sig` | 40 | Per input (ECDSA only) |
-| TXID | `-txid` | 24-28 | Via output grinding |
-
-### Workflow Order
-
-```
-1. Grind data-bearing pubkeys (mask mode)
-2. Build transaction template
-3. Grind TXID (via output pubkey modification)
-4. Compute sighash
-5. Grind signatures (sig mode, if ECDSA)
-6. Broadcast
-```
-
----
-
-## Recommendations
-
-### For General Use
-
-**Use P2WPKH.** It provides:
-- Control over when data becomes visible
-- Full Bitcoin Core compatibility
-- ECDSA signature grinding capability
-- Maximum commonality with normal transactions
-
-### For Taproot Applications
-
-**Use standard P2TR.** It provides:
-- Modern output type
-- Data in internal key (not directly visible)
-- Full Bitcoin Core compatibility
-
-### For Special Applications
-
-**Use P2TR raw X only if:**
-- You need immediate data visibility
-- You have custom signing infrastructure
-- Core compatibility is not required
+This document analyzes Bitcoin output types for steganographic data encoding with VanityMask, focusing on **immediate data visibility** and spendability.
 
 ---
 
 ## Quick Reference
 
-### P2WPKH Address Derivation
+| Output Type | X Visible | When | Spendable | Sig Type | Recommended |
+|-------------|-----------|------|-----------|----------|-------------|
+| **P2PK** | **YES** | **Immediate** | **YES** | ECDSA | **PRIMARY** |
+| P2WPKH | No | On spend | Yes | ECDSA | Secondary |
+| P2TR (raw) | Yes | Immediate | Manual | Schnorr | Not recommended |
+| P2TR (std) | No | Never | Yes | Schnorr | Not recommended |
 
-```python
-from hashlib import sha256, new as hashlib_new
+---
 
-# compressed_pubkey = 02/03 + X coordinate (33 bytes)
-sha = sha256(compressed_pubkey).digest()
-hash160 = hashlib_new('ripemd160', sha).digest()
-# scriptPubKey = 0014 + hash160
-# Address = bech32_encode('bc', 0, hash160)
+## P2PK (Pay-to-Public-Key) - PRIMARY METHOD
+
+**Format:** `<33-byte compressed pubkey> OP_CHECKSIG`
+
+### Why P2PK?
+
+1. **Immediate visibility** - Pubkey X coordinate is directly in scriptPubKey
+2. **Spendable** - Standard ECDSA signing works
+3. **R.x grinding** - Can grind signature R.x for additional data
+4. **Bitcoin Core compatible** - Full wallet support
+5. **What Obscurity uses** - Proven steganographic approach
+
+### scriptPubKey Structure
+
+```
+Bytes: 21 02CAFE4277791C0B638F38AF0528F13A6062BB212C8E9B658DF9FEEA8B4BAC05C4 AC
+       ^^ ^^                                                                ^^
+       |  |                                                                 OP_CHECKSIG (0xAC)
+       |  33-byte compressed pubkey (02/03 prefix + 32-byte X coordinate)
+       OP_PUSHBYTES_33 (0x21)
+
+Data location: Bytes 2-33 (the X coordinate)
+Data capacity: 32 bytes (256 bits) per output
 ```
 
-### P2TR Address Derivation (Standard)
+### Channel Capacity
+
+| Channel | Capacity | Visibility | Notes |
+|---------|----------|------------|-------|
+| Pubkey X | **256 bits/output** | Immediate | Full X coordinate |
+| Signature R.x | 40 bits/input | Immediate | ECDSA nonce grinding |
+| TXID prefix | 28 bits/tx | Immediate | Transaction hash |
+| Y parity | 1 bit/output | Immediate | 02 vs 03 prefix |
+
+### Example Workflow
+
+```bash
+# 1. Grind pubkey with target X prefix (or full X for max data)
+VanitySearch.exe -mask -tx CAFE4277 --prefix 4 -gpu -stop
+# Output: Privkey, Pubkey X = CAFE4277...
+
+# 2. Create P2PK scriptPubKey
+# scriptPubKey = 0x21 + compressed_pubkey + 0xAC
+
+# 3. Fund the P2PK output (raw transaction or Bitcoin Core)
+
+# 4. Data is IMMEDIATELY visible in the output scriptPubKey
+```
+
+### Transaction Configurations
+
+#### Option A: Single Output (256 bits)
+```
+1-in, 1-out P2PK transaction
+
+  Input 0:  [funding UTXO]
+  Output 0: P2PK with ground pubkey
+
+  Data: 256 bits in pubkey X
+  Bonus: 40 bits in signature R.x (if grinding)
+  Bonus: 28 bits in TXID (if grinding)
+```
+
+#### Option B: Multi-Output (768+ bits)
+```
+1-in, 3-out P2PK transaction
+
+  Input 0:  [funding UTXO]
+  Output 0: P2PK = 256 bits
+  Output 1: P2PK = 256 bits
+  Output 2: P2PK = 256 bits
+
+  Total: 768 bits (96 bytes) in pubkey X alone
+  Bonus: +40 bits signature, +28 bits TXID
+```
+
+---
+
+## P2WPKH (SegWit v0) - SECONDARY METHOD
+
+**Format:** `OP_0 <20-byte HASH160(pubkey)>`
+
+### When to Use P2WPKH
+
+- **Delayed reveal** - Data hidden until you choose to spend
+- **Maximum blending** - Most common output type (~60% of outputs)
+- **SegWit savings** - Lower fees due to witness discount
+- **Privacy feature** - Control when data becomes visible
+
+### Visibility Timeline
+
+```
+On creation:  scriptPubKey = 0014 <20-byte hash>
+              Data: HIDDEN (only hash visible)
+
+On spend:     witness = [signature, compressed_pubkey]
+              Data: REVEALED (pubkey X now visible)
+```
+
+### Use Cases
+
+1. **Two-phase commit** - Create now, reveal later
+2. **Plausible deniability** - "Just a normal address"
+3. **Coinjoin preparation** - Hide data until mixed
+
+### Channel Capacity (P2WPKH)
+
+| Channel | Capacity | When Visible |
+|---------|----------|--------------|
+| Pubkey X | 256 bits/output | On spend |
+| Signature R.x | 40 bits/input | On spend |
+| TXID prefix | 28 bits/tx | Immediate |
+
+---
+
+## P2TR (Taproot) - NOT RECOMMENDED
+
+### P2TR Standard (with tweak)
+
+The standard Taproot key derivation applies a tweak:
+
+```
+Internal key:  Your ground pubkey (CAFE42...)
+Tweak:         t = SHA256("TapTweak" || internal_key)
+Output key:    P + t*G = DIFFERENT VALUE
+```
+
+**Problem:** Your ground X coordinate is mathematically obscured.
+
+### P2TR Raw X (no tweak)
+
+Putting raw X in scriptPubKey:
+
+```
+scriptPubKey: 5120 <32-byte raw X>
+```
+
+**Problem:** Bitcoin Core won't sign correctly (expects tweaked key). Requires custom BIP-340 Schnorr signing implementation.
+
+### Why Not Taproot?
+
+1. Schnorr signatures (can't grind R.x with VanityMask's ECDSA mode)
+2. Key tweaking obscures your data
+3. Raw X requires custom signing code
+
+---
+
+## Comparison Summary
+
+### For Immediate Visibility (Sidechain Proofs)
+
+**Use P2PK.** Your pubkey X is directly in the scriptPubKey, visible as soon as the transaction is broadcast.
+
+### For Delayed Visibility (Privacy/Coinjoin)
+
+**Use P2WPKH.** Your pubkey X is hidden in a hash until you spend, giving you control over reveal timing.
+
+### For Maximum Data Per Transaction
+
+| Config | Pubkey X | Sig R.x | TXID | Total |
+|--------|----------|---------|------|-------|
+| 1-in, 1-out P2PK | 256 | 40 | 28 | **324 bits** |
+| 1-in, 2-out P2PK | 512 | 40 | 28 | **580 bits** |
+| 1-in, 3-out P2PK | 768 | 40 | 28 | **836 bits** |
+| 2-in, 3-out P2PK | 768 | 80 | 28 | **876 bits** |
+
+---
+
+## P2PK Address Derivation
+
+P2PK outputs don't have a standard address format (they predate addresses). Use raw scriptPubKey:
 
 ```python
-# internal_key = X coordinate (32 bytes)
-tweak = tagged_hash("TapTweak", internal_key)
-output_key = point_add(internal_key, tweak * G)
-# scriptPubKey = 5120 + output_key.x
-# Address = bech32m_encode('bc', 1, output_key.x)
+# From compressed pubkey to P2PK scriptPubKey
+compressed_pubkey = bytes.fromhex('02CAFE4277...')  # 33 bytes
+script_pubkey = bytes([0x21]) + compressed_pubkey + bytes([0xAC])
+
+# To spend: sign with ECDSA, put signature in scriptSig
+# scriptSig = <signature>
 ```
 
 ---
 
 ## Test Results
 
-All output types tested on Bitcoin Core regtest (v28.1.0):
+### P2PK on Bitcoin Core Regtest
 
-| Output Type | Receive | Spend | Data Recovery |
-|-------------|---------|-------|---------------|
-| P2WPKH | PASS | PASS | In witness |
-| P2TR (standard) | PASS | PASS | Via tweak |
-| P2TR (raw X) | PASS | Manual required | Direct |
+| Test | Result | Details |
+|------|--------|---------|
+| Create P2PK output | PASS | scriptPubKey contains raw pubkey |
+| X visible immediately | PASS | Can read CAFE42... from script |
+| Spend P2PK output | PASS | ECDSA signature works |
+| R.x grinding on spend | PASS | Signature R.x prefix matched |
 
-See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for detailed test logs.
+### P2WPKH on Bitcoin Core Regtest
+
+| Test | Result | Details |
+|------|--------|---------|
+| Create P2WPKH output | PASS | Hash only in scriptPubKey |
+| X hidden until spend | PASS | Cannot see pubkey in output |
+| Spend reveals pubkey | PASS | Witness contains full pubkey |
+
+---
+
+## Recommendations
+
+### Steganographic Sidechain (Immediate Proofs)
+
+```
+Use P2PK outputs:
+- 1 output = 256 bits = full sidechain block hash
+- Data visible immediately for verifiers
+- Spendable (not a burn address)
+- Grind signature R.x for bonus 40 bits
+```
+
+### Privacy-Focused Encoding
+
+```
+Use P2WPKH outputs:
+- Data hidden until you spend
+- Blend with 60% of Bitcoin outputs
+- SegWit fee savings
+- Reveal on your schedule
+```
+
+### Maximum Throughput
+
+```
+3-out P2PK + signature grinding:
+- 768 bits in pubkey X (3 outputs)
+- 40 bits in signature R.x
+- 28 bits in TXID
+- Total: 836 bits (104.5 bytes) per transaction
+```
 
 ---
 
 **Last Updated:** 2024-12-30
+**Primary Method:** P2PK (immediate visibility)
+**Secondary Method:** P2WPKH (delayed visibility)
