@@ -249,6 +249,74 @@ __device__ void SHA256Transform(uint32_t s[8],uint32_t* w) {
 
 }
 
+// ---------------------------------------------------------------------------------
+// TAPROOT (BIP-341) TAGGED HASH
+// ---------------------------------------------------------------------------------
+
+// Precomputed SHA256("TapTweak") - used as prefix for tagged hash
+// SHA256("TapTweak") = e80fe1639c9ca050e3af1b39c143c63e429cbceb15d940fbb5c5a1f4af57c5e9
+__device__ __constant__ uint32_t _taptweak_tag_hash[8] = {
+  0xe80fe163U, 0x9c9ca050U, 0xe3af1b39U, 0xc143c63eU,
+  0x429cbcebU, 0x15d940fbU, 0xb5c5a1f4U, 0xaf57c5e9U
+};
+
+// Compute BIP-340/341 tagged hash: SHA256(SHA256(tag) || SHA256(tag) || data)
+// For TapTweak, data is the 32-byte x-coordinate of the internal key
+__device__ void SHA256_TapTweak(uint32_t result[8], uint64_t px[4]) {
+  uint32_t s[8];
+
+  // Initialize state
+  SHA256Initialize(s);
+
+  // Block 1: tagHash || tagHash (64 bytes = one full block)
+  uint32_t w[16];
+  #pragma unroll 8
+  for (int i = 0; i < 8; i++) w[i] = _taptweak_tag_hash[i];
+  #pragma unroll 8
+  for (int i = 0; i < 8; i++) w[8 + i] = _taptweak_tag_hash[i];
+  SHA256Transform(s, w);
+
+  // Block 2: px (32 bytes) + padding (32 bytes)
+  // Convert px from 4x uint64 (little-endian limbs) to 8x uint32 big-endian words
+  // px[3] contains the MSB, px[0] contains the LSB
+  // The numeric values extracted from limbs are already in big-endian word order
+  // NO bswap needed - the value 0xEBD8EBAE from px[3]>>32 IS the correct w[0]
+  w[0] = (uint32_t)(px[3] >> 32);
+  w[1] = (uint32_t)(px[3]);
+  w[2] = (uint32_t)(px[2] >> 32);
+  w[3] = (uint32_t)(px[2]);
+  w[4] = (uint32_t)(px[1] >> 32);
+  w[5] = (uint32_t)(px[1]);
+  w[6] = (uint32_t)(px[0] >> 32);
+  w[7] = (uint32_t)(px[0]);
+
+  // Padding: 0x80, zeros, then length in bits (96 bytes = 768 bits = 0x300)
+  w[8] = 0x80000000U;
+  w[9] = 0;
+  w[10] = 0;
+  w[11] = 0;
+  w[12] = 0;
+  w[13] = 0;
+  w[14] = 0;
+  w[15] = 0x300;  // 96 bytes * 8 = 768 bits
+
+  SHA256Transform(s, w);
+
+  // Copy result (big-endian)
+  #pragma unroll 8
+  for (int i = 0; i < 8; i++) result[i] = s[i];
+}
+
+// Convert 32-byte hash (8x uint32 big-endian) to 256-bit scalar (4x uint64 little-endian limbs)
+// SHA256 outputs big-endian words: hash[0]=MSB, hash[7]=LSB
+// EC scalars use little-endian limbs: scalar[0]=LSB, scalar[3]=MSB
+// No bswap needed - just combine words directly
+__device__ void HashToScalar256(uint64_t scalar[4], uint32_t hash[8]) {
+  scalar[3] = ((uint64_t)hash[0] << 32) | hash[1];  // MSB 64 bits (bytes 0-7)
+  scalar[2] = ((uint64_t)hash[2] << 32) | hash[3];  // bytes 8-15
+  scalar[1] = ((uint64_t)hash[4] << 32) | hash[5];  // bytes 16-23
+  scalar[0] = ((uint64_t)hash[6] << 32) | hash[7];  // LSB 64 bits (bytes 24-31)
+}
 
 // ---------------------------------------------------------------------------------
 // RIPEMD160

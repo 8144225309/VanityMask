@@ -1702,6 +1702,19 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
   ok = g.SetKeys(p);
   ph->rekeyRequest = false;
 
+  // Debug: print a sample key and point
+  if (taprootMode && nbThread > 1000) {
+    int sampleTid = 1000;
+    printf("DEBUG INIT: keys[%d] = %s\n", sampleTid, keys[sampleTid].GetBase16().c_str());
+    printf("DEBUG INIT: p[%d].x = %s\n", sampleTid, p[sampleTid].x.GetBase16().c_str());
+    Int expectedKey;
+    expectedKey.Set(&keys[sampleTid]);
+    expectedKey.Add((uint64_t)(g.GetGroupSize() / 2));
+    Point expectedP = secp->ComputePublicKey(&expectedKey);
+    printf("DEBUG INIT: expected P.x = %s\n", expectedP.x.GetBase16().c_str());
+    printf("DEBUG INIT: p matches expected: %s\n", (p[sampleTid].x.IsEqual(&expectedP.x) ? "YES" : "NO"));
+  }
+
   ph->hasStarted = true;
 
   // GPU Thread
@@ -1787,14 +1800,25 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
         Int finalKey;
         finalKey.Set(&keys[it.thId]);
 
-        // Step 1: Add increment (always the absolute value - the actual offset)
-        int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
-        finalKey.Add((uint64_t)absIncr);
-
-        // For taproot mode: GPU starting points are at keys[i] + groupSize/2
-        // So we need to add the center offset
         if (taprootMode) {
+          // Taproot mode: GPU increments P by 1 each kernel call (P = P + G)
+          // Results are retrieved one kernel call later (async pattern)
+          // At processing time, keys[thId] = original + taprootIter + 1
+          // The match was found at point original + taprootIter
+          // So we need to subtract 1 to get the correct key
+          printf("DEBUG taproot reconstruction:\n");
+          printf("  keys[%u] = %s\n", it.thId, keys[it.thId].GetBase16().c_str());
+          printf("  incr (taprootIter) = %d\n", it.incr);
+          printf("  groupSize/2 = %d\n", g.GetGroupSize() / 2);
+          finalKey.Sub(1);
+          printf("  After Sub(1): %s\n", finalKey.GetBase16().c_str());
+          // Add center offset (GPU starts at keys[i] + groupSize/2)
           finalKey.Add((uint64_t)(g.GetGroupSize() / 2));
+          printf("  After Add(groupSize/2): %s\n", finalKey.GetBase16().c_str());
+        } else {
+          // Step 1: Add increment (always the absolute value - the actual offset)
+          int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
+          finalKey.Add((uint64_t)absIncr);
         }
 
         // Step 2: Apply endomorphism multiplication
@@ -1814,6 +1838,23 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
 
         // Get public key (R = k*G for signature, or pubkey for stego)
         Point pubKey = secp->ComputePublicKey(&finalKey);
+        if (taprootMode) {
+          printf("  Computed P.x = %s\n", pubKey.x.GetBase16().c_str());
+          printf("  Original p[%u].x = %s\n", it.thId, p[it.thId].x.GetBase16().c_str());
+          printf("  p matches computed: %s\n", p[it.thId].x.IsEqual(&pubKey.x) ? "YES" : "NO");
+          // Show expected key: keys[thId] should have been incremented it.incr+1 times
+          // So original key = keys[thId] - (it.incr + 1)
+          // And expected P = (original + groupSize/2 + it.incr) * G
+          Int expectedKey;
+          expectedKey.Set(&keys[it.thId]);
+          expectedKey.Sub((uint64_t)(it.incr + 1));  // Get original
+          expectedKey.Add((uint64_t)(g.GetGroupSize() / 2 + it.incr));  // Add offset + iterations
+          Point expectedP = secp->ComputePublicKey(&expectedKey);
+          printf("  expectedKey (incr=%d): keys[%u] - %d + %d = %s\n",
+                 it.incr, it.thId, it.incr + 1, g.GetGroupSize()/2 + it.incr,
+                 expectedKey.GetBase16().c_str());
+          printf("  Expected P.x = %s\n", expectedP.x.GetBase16().c_str());
+        }
 
         if (sigMode) {
           // Signature R-value grinding mode - compute the full signature
@@ -1973,6 +2014,13 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
       if (txidMode) {
         // TXID mode: count nonces tried (1 per thread per kernel call)
         counters[thId] += (uint64_t)nbThread;
+      } else if (taprootMode) {
+        // Taproot mode: GPU increments P by 1 each kernel call (P = P + G)
+        // So we increment keys by 1 to track the GPU's state
+        for (int i = 0; i < nbThread; i++) {
+          keys[i].Add(1);
+        }
+        counters[thId] += (uint64_t)nbThread; // 1 point checked per thread per kernel
       } else {
         // EC modes: update keys and count operations
         for (int i = 0; i < nbThread; i++) {

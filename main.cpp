@@ -927,24 +927,8 @@ int main(int argc, char* argv[]) {
     printf("Mask:       %s\n", hexBuf);
     printf("Bits:       %d (difficulty 2^%d)\n", stegoTarget.numBits, stegoTarget.numBits);
     printf("Output:     Q = P + hash(P)*G (tweaked output key)\n");
-    printf("Note:       ~2x slower than standard mask mode\n");
+    printf("Note:       ~50-100x slower than mask mode (scalar mult per point)\n");
     printf("==========================================\n\n");
-
-    // TODO: Taproot mode requires GPU kernel modification to compute Q = P + hash(P)*G
-    // and match Q.x instead of P.x. This is not yet implemented.
-    printf("ERROR: Taproot post-tweak grinding requires GPU kernel modification.\n");
-    printf("       GPU currently matches P.x, not Q.x = (P + hash(P)*G).x\n");
-    printf("\n");
-    printf("WORKAROUND: Use rawtr() with standard -mask mode:\n");
-    printf("  1. VanitySearch -mask -tx CAFE42 --prefix 3 -gpu -stop\n");
-    printf("  2. Use rawtr(KEY) descriptor (no tweak, KEY.x visible directly)\n");
-    printf("  3. Sign with external Schnorr signer\n");
-    printf("\n");
-    printf("For Schnorr signature grinding, use:\n");
-    printf("  VanitySearch -sig --schnorr -tx PREFIX -z MSG -d KEY -p PUBKEY -gpu -stop\n");
-    printf("\n");
-    printf("See P2TR_IMPLEMENTATION_PLAN.md for GPU kernel modification details.\n");
-    exit(-1);
 
     searchMode = SEARCH_STEGO;
   }

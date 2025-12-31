@@ -957,9 +957,12 @@ bool GPUEngine::LaunchTaproot(std::vector<ITEM> &found, bool spinWait) {
     it.incr = ptr[1];
     it.hash = (uint8_t *)(itemPtr + 2);
 
-    // Debug: print raw item data
+    // Debug: print raw item data and GPU's Q.x
     printf("\nDEBUG RAW ITEM: itemPtr[0]=%u itemPtr[1]=0x%08x\n", itemPtr[0], itemPtr[1]);
     printf("  Parsed: tid=%u incr=%d endo=%d mode=%d\n", it.thId, it.incr, it.endo, it.mode?1:0);
+    // GPU's P.x MSB is in itemPtr[2..3], Q.x MSB is in itemPtr[4..5]
+    printf("  GPU P.x MSB: %08X%08X\n", itemPtr[2], itemPtr[3]);
+    printf("  GPU Q.x MSB: %08X%08X\n", itemPtr[4], itemPtr[5]);
 
     found.push_back(it);
   }

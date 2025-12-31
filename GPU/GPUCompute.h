@@ -1018,7 +1018,9 @@ __device__ void ComputeKeysTaproot(uint64_t *startx, uint64_t *starty,
       // Store P.x MSB (the internal key we're tweaking)
       out[pos*ITEM_SIZE32 + 3] = (uint32_t)(px[3] >> 32);
       out[pos*ITEM_SIZE32 + 4] = (uint32_t)(px[3]);
-      // Remaining slots available for future use
+      // Store Q.x MSB (the output key - what we matched)
+      out[pos*ITEM_SIZE32 + 5] = (uint32_t)(Qx[3] >> 32);
+      out[pos*ITEM_SIZE32 + 6] = (uint32_t)(Qx[3]);
     }
   }
 
