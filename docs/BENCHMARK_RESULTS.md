@@ -2,6 +2,47 @@
 
 ## Test Configuration
 
+- **GPU**: NVIDIA GeForce RTX 4090 (128 SMs, 16384 CUDA cores)
+- **Date**: 2026-01-01 (updated)
+- **Build**: Post-endomorphism optimization (commit e0afe37)
+- **Driver**: 591.44
+
+## Latest Results (January 1, 2026)
+
+### Test Suite Summary
+
+```
+Total tests: 17
+Passed: 17 (100.0%)
+Verified: 17 (100.0%)
+
+By Mode:
+  mask: 6/6 passed, avg time: 1.95s
+  sig-ecdsa: 3/3 passed, avg time: 2.81s
+  sig-schnorr: 3/3 passed, avg time: 2.98s
+  txid: 3/3 passed, avg time: 1.43s
+  error-handling: 5/5 passed
+```
+
+### Endomorphism Optimization Impact
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| MASK avg time | 4.46s | 1.94s | **2.3x faster** |
+| Points checked per EC op | 2 | 6 | 3x more |
+
+### Cross-Platform Performance (16-bit prefix)
+
+| Mode | Windows | WSL/Linux | Difference |
+|------|---------|-----------|------------|
+| MASK | 2.68s | 2.10s | Linux 22% faster |
+| SIG-ECDSA | 2.67s | 2.10s | Linux 21% faster |
+| TXID | 2.16s | 2.10s | Linux 3% faster |
+
+---
+
+## Historical Test Configuration
+
 - **GPU**: NVIDIA GeForce RTX 4090
 - **Date**: 2025-12-31
 - **Build**: Post-taproot GPU fix (commit a8d35e5)
