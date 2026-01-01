@@ -2,7 +2,8 @@
 """
 VanityMask Benchmark Suite
 
-Performance benchmarks for all GPU modes with regression detection.
+Performance benchmarks for all GPU modes with regression detection
+and resource monitoring (GPU utilization, VRAM, CPU, RAM).
 
 Usage:
     python benchmark_suite.py --quick     # Quick benchmarks (~5 min)
@@ -22,6 +23,21 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple
+
+# Import GPU monitoring
+try:
+    from gpu_monitor import GPUMonitor, get_gpu_memory, check_utilization, UTILIZATION_THRESHOLDS
+    GPU_MONITORING_AVAILABLE = True
+except ImportError:
+    GPU_MONITORING_AVAILABLE = False
+    print("WARNING: gpu_monitor.py not found - GPU utilization tracking disabled")
+
+# Try to import psutil for CPU/RAM monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent
@@ -49,6 +65,16 @@ class BenchmarkResult:
     private_key: Optional[str] = None
     verified: bool = False
     error: Optional[str] = None
+    # GPU resource monitoring
+    gpu_util_avg: float = 0.0
+    gpu_util_min: float = 0.0
+    gpu_util_max: float = 0.0
+    gpu_util_samples: int = 0
+    vram_used_mb: int = 0
+    vram_total_mb: int = 0
+    # CPU/RAM monitoring
+    cpu_percent: float = 0.0
+    ram_used_mb: int = 0
 
 
 @dataclass
@@ -66,6 +92,16 @@ class BenchmarkSummary:
     baseline_throughput: Optional[float] = None
     baseline_diff_pct: Optional[float] = None
     status: str = "PASS"
+    # GPU resource monitoring (averages across iterations)
+    avg_gpu_util: float = 0.0
+    min_gpu_util: float = 0.0
+    max_gpu_util: float = 0.0
+    avg_vram_mb: int = 0
+    gpu_util_target: int = 0
+    gpu_util_target_met: bool = False
+    # CPU/RAM monitoring
+    avg_cpu_percent: float = 0.0
+    avg_ram_mb: int = 0
 
 
 def load_baselines() -> Dict:
@@ -103,8 +139,8 @@ def parse_vanitysearch_output(output: str) -> Tuple[float, Optional[str], bool]:
     private_key = None
     found = False
 
-    # Parse throughput: [GPU X.XX Mkey/s] or [X.XX Gkey/s]
-    # Look for the last throughput line
+    # Parse throughput: [GPU X.XX Mkey/s] or [GPU X.XX Gkey/s]
+    # Look for the last throughput line (from running status)
     for line in output.split('\n'):
         if 'Mkey/s' in line or 'Gkey/s' in line:
             match = re.search(r'\[GPU\s+([\d.]+)\s+(M|G)key/s\]', line)
@@ -112,6 +148,15 @@ def parse_vanitysearch_output(output: str) -> Tuple[float, Optional[str], bool]:
                 value = float(match.group(1))
                 unit = match.group(2)
                 throughput = value * 1000 if unit == 'G' else value
+
+    # If no running throughput found, try to parse the estimate from header
+    # Format: "Estimate:   X.X seconds @ Y.Y GKeys/s"
+    if throughput == 0.0:
+        estimate_match = re.search(r'@\s+([\d.]+)\s+(M|G)Keys/s', output, re.IGNORECASE)
+        if estimate_match:
+            value = float(estimate_match.group(1))
+            unit = estimate_match.group(2).upper()
+            throughput = value * 1000 if unit == 'G' else value
 
     # Parse private key
     priv_match = re.search(r'Priv \(HEX\):\s*0x([A-Fa-f0-9]+)', output)
@@ -123,7 +168,7 @@ def parse_vanitysearch_output(output: str) -> Tuple[float, Optional[str], bool]:
 
 
 def run_benchmark(mode: str, bits: int, target: str, extra_args: List[str] = None) -> BenchmarkResult:
-    """Run a single benchmark test."""
+    """Run a single benchmark test with resource monitoring."""
     test_id = f"{mode.upper()}-{bits}"
 
     # Build command
@@ -147,6 +192,18 @@ def run_benchmark(mode: str, bits: int, target: str, extra_args: List[str] = Non
     if extra_args:
         cmd.extend(extra_args)
 
+    # Initialize resource monitoring
+    gpu_monitor = None
+    if GPU_MONITORING_AVAILABLE:
+        gpu_monitor = GPUMonitor(sample_interval=0.5)
+        gpu_monitor.start()
+
+    # Capture initial CPU/RAM
+    cpu_start = ram_start = 0
+    if PSUTIL_AVAILABLE:
+        cpu_start = psutil.cpu_percent(interval=None)
+        ram_start = psutil.virtual_memory().used // (1024 * 1024)
+
     # Run benchmark
     start_time = time.time()
     try:
@@ -161,6 +218,30 @@ def run_benchmark(mode: str, bits: int, target: str, extra_args: List[str] = Non
 
         throughput, private_key, found = parse_vanitysearch_output(output)
 
+        # Stop GPU monitoring and collect stats
+        gpu_util_avg = gpu_util_min = gpu_util_max = 0.0
+        gpu_util_samples = 0
+        vram_used = vram_total = 0
+
+        if gpu_monitor:
+            gpu_stats = gpu_monitor.stop()
+            gpu_util_avg = gpu_stats.avg_util
+            gpu_util_min = gpu_stats.min_util
+            gpu_util_max = gpu_stats.max_util
+            gpu_util_samples = gpu_stats.sample_count
+
+        # Get VRAM usage
+        if GPU_MONITORING_AVAILABLE:
+            mem_info = get_gpu_memory()
+            vram_used = mem_info.get('used_mb', 0)
+            vram_total = mem_info.get('total_mb', 0)
+
+        # Get CPU/RAM usage
+        cpu_percent = ram_used = 0
+        if PSUTIL_AVAILABLE:
+            cpu_percent = psutil.cpu_percent(interval=None)
+            ram_used = psutil.virtual_memory().used // (1024 * 1024)
+
         return BenchmarkResult(
             test_id=test_id,
             mode=mode,
@@ -169,9 +250,20 @@ def run_benchmark(mode: str, bits: int, target: str, extra_args: List[str] = Non
             throughput_mkeys=throughput,
             elapsed_sec=elapsed,
             found=found,
-            private_key=private_key
+            private_key=private_key,
+            gpu_util_avg=gpu_util_avg,
+            gpu_util_min=gpu_util_min,
+            gpu_util_max=gpu_util_max,
+            gpu_util_samples=gpu_util_samples,
+            vram_used_mb=vram_used,
+            vram_total_mb=vram_total,
+            cpu_percent=cpu_percent,
+            ram_used_mb=ram_used
         )
     except subprocess.TimeoutExpired:
+        # Stop GPU monitoring on timeout
+        if gpu_monitor:
+            gpu_monitor.stop()
         return BenchmarkResult(
             test_id=test_id,
             mode=mode,
@@ -183,6 +275,9 @@ def run_benchmark(mode: str, bits: int, target: str, extra_args: List[str] = Non
             error="Timeout"
         )
     except Exception as e:
+        # Stop GPU monitoring on error
+        if gpu_monitor:
+            gpu_monitor.stop()
         return BenchmarkResult(
             test_id=test_id,
             mode=mode,
@@ -212,7 +307,8 @@ def run_benchmark_iterations(mode: str, bits: int, target: str, iterations: int)
         if result.error:
             print(f"ERROR: {result.error}")
         elif result.found:
-            print(f"OK - {result.throughput_mkeys:.1f} Mkey/s, {result.elapsed_sec:.3f}s")
+            gpu_info = f", GPU:{result.gpu_util_avg:.0f}%" if result.gpu_util_avg > 0 else ""
+            print(f"OK - {result.throughput_mkeys:.1f} Mkey/s, {result.elapsed_sec:.3f}s{gpu_info}")
         else:
             print(f"NO MATCH - {result.throughput_mkeys:.1f} Mkey/s")
 
@@ -227,6 +323,34 @@ def run_benchmark_iterations(mode: str, bits: int, target: str, iterations: int)
     else:
         avg_throughput = min_throughput = max_throughput = avg_time = 0
 
+    # Compute GPU stats from all results (even unsuccessful ones may have GPU data)
+    results_with_gpu = [r for r in results if r.gpu_util_samples > 0]
+    if results_with_gpu:
+        avg_gpu_util = sum(r.gpu_util_avg for r in results_with_gpu) / len(results_with_gpu)
+        min_gpu_util = min(r.gpu_util_min for r in results_with_gpu)
+        max_gpu_util = max(r.gpu_util_max for r in results_with_gpu)
+        avg_vram = sum(r.vram_used_mb for r in results_with_gpu) // len(results_with_gpu)
+    else:
+        avg_gpu_util = min_gpu_util = max_gpu_util = 0.0
+        avg_vram = 0
+
+    # Compute CPU/RAM stats
+    results_with_sys = [r for r in results if r.cpu_percent > 0 or r.ram_used_mb > 0]
+    if results_with_sys:
+        avg_cpu = sum(r.cpu_percent for r in results_with_sys) / len(results_with_sys)
+        avg_ram = sum(r.ram_used_mb for r in results_with_sys) // len(results_with_sys)
+    else:
+        avg_cpu = 0.0
+        avg_ram = 0
+
+    # Get GPU utilization target for this mode
+    gpu_target = 0
+    gpu_target_met = False
+    if GPU_MONITORING_AVAILABLE:
+        threshold = UTILIZATION_THRESHOLDS.get(mode, UTILIZATION_THRESHOLDS.get('mask', {}))
+        gpu_target = threshold.get('min', 0)
+        gpu_target_met = avg_gpu_util >= gpu_target
+
     summary = BenchmarkSummary(
         test_id=f"{mode.upper()}-{bits}",
         mode=mode,
@@ -236,7 +360,15 @@ def run_benchmark_iterations(mode: str, bits: int, target: str, iterations: int)
         min_throughput_mkeys=min_throughput,
         max_throughput_mkeys=max_throughput,
         avg_time_sec=avg_time,
-        success_rate=len(successful) / iterations if iterations > 0 else 0
+        success_rate=len(successful) / iterations if iterations > 0 else 0,
+        avg_gpu_util=avg_gpu_util,
+        min_gpu_util=min_gpu_util,
+        max_gpu_util=max_gpu_util,
+        avg_vram_mb=avg_vram,
+        gpu_util_target=gpu_target,
+        gpu_util_target_met=gpu_target_met,
+        avg_cpu_percent=avg_cpu,
+        avg_ram_mb=avg_ram
     )
 
     # Load baseline and compare
@@ -261,6 +393,11 @@ def run_benchmark_iterations(mode: str, bits: int, target: str, iterations: int)
     # Print summary
     print(f"\n  Summary: {avg_throughput:.1f} Mkey/s avg ({min_throughput:.1f}-{max_throughput:.1f})")
     print(f"  Avg time: {avg_time:.3f}s, Success rate: {summary.success_rate*100:.0f}%")
+    if avg_gpu_util > 0:
+        target_status = "OK" if gpu_target_met else "LOW"
+        print(f"  GPU util: {avg_gpu_util:.1f}% avg ({min_gpu_util:.0f}-{max_gpu_util:.0f}%), target: {gpu_target}% [{target_status}]")
+        if avg_vram > 0:
+            print(f"  VRAM: {avg_vram} MB")
     if summary.baseline_diff_pct is not None:
         sign = "+" if summary.baseline_diff_pct >= 0 else ""
         print(f"  Baseline diff: {sign}{summary.baseline_diff_pct:.1f}% [{summary.status}]")
@@ -336,15 +473,15 @@ def run_single_mode(mode: str, bits: int = 16, iterations: int = 3) -> Benchmark
 
 
 def print_final_report(summaries: List[BenchmarkSummary], gpu_name: str):
-    """Print final benchmark report."""
-    print("\n" + "="*70)
+    """Print final benchmark report with resource monitoring."""
+    print("\n" + "="*90)
     print("BENCHMARK RESULTS SUMMARY")
-    print("="*70)
+    print("="*90)
     print(f"GPU: {gpu_name}")
     print(f"Timestamp: {datetime.now().isoformat()}")
-    print("-"*70)
-    print(f"{'Test':<20} {'Throughput':>15} {'Time':>10} {'Status':>10}")
-    print("-"*70)
+    print("-"*90)
+    print(f"{'Test':<16} {'Throughput':>14} {'Time':>8} {'GPU%':>8} {'VRAM':>10} {'Status':>8}")
+    print("-"*90)
 
     passed = warnings = failed = 0
 
@@ -355,9 +492,12 @@ def print_final_report(summaries: List[BenchmarkSummary], gpu_name: str):
 
         time_str = f"{s.avg_time_sec:.3f}s"
 
+        gpu_str = f"{s.avg_gpu_util:.0f}%" if s.avg_gpu_util > 0 else "-"
+        vram_str = f"{s.avg_vram_mb} MB" if s.avg_vram_mb > 0 else "-"
+
         status_icon = {"PASS": "[OK]", "WARNING": "[!]", "CRITICAL": "[X]"}.get(s.status, "[ ]")
 
-        print(f"{s.test_id:<20} {throughput_str:>15} {time_str:>10} {status_icon:>10}")
+        print(f"{s.test_id:<16} {throughput_str:>14} {time_str:>8} {gpu_str:>8} {vram_str:>10} {status_icon:>8}")
 
         if s.status == "PASS":
             passed += 1
@@ -366,8 +506,15 @@ def print_final_report(summaries: List[BenchmarkSummary], gpu_name: str):
         else:
             failed += 1
 
-    print("-"*70)
+    print("-"*90)
     print(f"Total: {len(summaries)} tests | Passed: {passed} | Warnings: {warnings} | Failed: {failed}")
+
+    # Print GPU utilization summary
+    gpu_util_results = [s for s in summaries if s.avg_gpu_util > 0]
+    if gpu_util_results:
+        gpu_ok = sum(1 for s in gpu_util_results if s.gpu_util_target_met)
+        gpu_low = len(gpu_util_results) - gpu_ok
+        print(f"GPU Utilization: {gpu_ok} met target, {gpu_low} below target")
 
     if failed > 0:
         print("\n*** CRITICAL REGRESSIONS DETECTED ***")

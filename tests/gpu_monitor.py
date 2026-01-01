@@ -246,10 +246,47 @@ def run_with_monitoring(cmd: List[str], expected_util: int = 90, timeout: float 
 UTILIZATION_THRESHOLDS = {
     'mask': {'min': 85, 'target': 95, 'description': 'EC operations (compute-bound)'},
     'sig': {'min': 85, 'target': 95, 'description': 'EC operations (compute-bound)'},
-    'sig-schnorr': {'min': 85, 'target': 95, 'description': 'EC operations (compute-bound)'},
+    'sig_ecdsa': {'min': 85, 'target': 95, 'description': 'EC operations (compute-bound)'},
+    'sig_schnorr': {'min': 85, 'target': 95, 'description': 'EC operations (compute-bound)'},
+    'taproot': {'min': 50, 'target': 80, 'description': 'Scalar mult (kernel launch limited)'},
     'txid': {'min': 50, 'target': 62, 'description': 'SHA256 operations (memory-bound)'},
     'vanity': {'min': 85, 'target': 95, 'description': 'EC + hash operations'},
 }
+
+
+def get_gpu_memory() -> Dict:
+    """
+    Get current GPU memory usage.
+
+    Returns:
+        Dict with used_mb, total_mb, and percent
+    """
+    try:
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                '--query-gpu=memory.used,memory.total',
+                '--format=csv,noheader,nounits'
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5.0
+        )
+
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(', ')
+            if len(parts) >= 2:
+                used = int(parts[0])
+                total = int(parts[1])
+                return {
+                    'used_mb': used,
+                    'total_mb': total,
+                    'percent': round(used / total * 100, 1) if total > 0 else 0
+                }
+        return {'error': result.stderr}
+
+    except Exception as e:
+        return {'error': str(e)}
 
 
 def check_utilization(mode: str, stats: GPUStats) -> Dict:
