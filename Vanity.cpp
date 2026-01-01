@@ -1923,18 +1923,28 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           }
 
           // Output the signature
+          // Zero-pad hex values to 64 chars (256 bits) for consistent output
+          string rxHex = pubKey.x.GetBase16();
+          while (rxHex.length() < 64) rxHex = "0" + rxHex;
+          string rHex = r_val.GetBase16();
+          while (rHex.length() < 64) rHex = "0" + rHex;
+          string sHex = s_val.GetBase16();
+          while (sHex.length() < 64) sHex = "0" + sHex;
+          string kHex = nonce_k.GetBase16();
+          while (kHex.length() < 64) kHex = "0" + kHex;
+
           printf("\n=== SIGNATURE FOUND ===\n");
-          printf("Nonce (k):  %s\n", nonce_k.GetBase16().c_str());
-          printf("R.x:        %s\n", pubKey.x.GetBase16().c_str());
+          printf("Nonce (k):  %s\n", kHex.c_str());
+          printf("R.x:        %s\n", rxHex.c_str());
           printf("R.y parity: %s\n", pubKey.y.IsOdd() ? "odd" : "even");
-          printf("sig.r:      %s\n", r_val.GetBase16().c_str());
-          printf("sig.s:      %s\n", s_val.GetBase16().c_str());
+          printf("sig.r:      %s\n", rHex.c_str());
+          printf("sig.s:      %s\n", sHex.c_str());
           printf("Mode:       %s\n", schnorrMode ? "BIP340 Schnorr" : "ECDSA");
           printf("========================\n");
 
-          // Also output to file if specified
-          string sigInfo = "SIG:r=" + r_val.GetBase16() + ",s=" + s_val.GetBase16();
-          output(sigInfo, nonce_k.GetBase16(), r_val.GetBase16());
+          // Also output to file if specified (use padded hex strings)
+          string sigInfo = "SIG:r=" + rHex + ",s=" + sHex;
+          output(sigInfo, kHex, rHex);
 
         } else if (taprootMode) {
           // Taproot post-tweak grinding mode
