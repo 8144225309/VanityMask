@@ -532,10 +532,11 @@ CheckPoint(h2, -(_incr), 2, true, sPrefix, lookup32, maxFound, out, P2PKH);    \
 
 // -----------------------------------------------------------------------------------------
 // Steganography mode: match raw X coordinate against target/mask
-// No hashing, no endomorphisms - just direct bitmask comparison
+// Stego mode with endomorphism support for 3x throughput
+// Uses secp256k1 endomorphism: lambda*P = (beta*x, y) where lambda^3 = 1 mod n
 // -----------------------------------------------------------------------------------------
 
-__device__ __noinline__ void CheckStegoPoint(uint64_t *px, int32_t incr, uint32_t maxFound, uint32_t *out) {
+__device__ __noinline__ void CheckStegoPointEndo(uint64_t *px, int32_t incr, int endo, uint32_t maxFound, uint32_t *out) {
 
   uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
@@ -553,8 +554,8 @@ __device__ __noinline__ void CheckStegoPoint(uint64_t *px, int32_t incr, uint32_
     uint32_t pos = atomicAdd(out, 1);
     if (pos < maxFound) {
       out[pos * ITEM_SIZE32 + 1] = tid;
-      // incr in high 16 bits, mode=1 (compressed) in bit 15, endo=0 in low 15 bits
-      out[pos * ITEM_SIZE32 + 2] = (uint32_t)((incr << 16) | (1 << 15) | 0);
+      // incr in high 16 bits, mode=1 (compressed) in bit 15, endo in bits 0-1
+      out[pos * ITEM_SIZE32 + 2] = (uint32_t)((incr << 16) | (1 << 15) | (endo & 0x3));
       // Store first 160 bits of X coordinate for quick verification
       out[pos * ITEM_SIZE32 + 3] = (uint32_t)(px[0]);
       out[pos * ITEM_SIZE32 + 4] = (uint32_t)(px[0] >> 32);
@@ -565,7 +566,30 @@ __device__ __noinline__ void CheckStegoPoint(uint64_t *px, int32_t incr, uint32_
   }
 }
 
-#define CHECK_STEGO_POINT(_incr) CheckStegoPoint(px, (_incr), maxFound, out)
+// Check all 6 variations: base + 2 endomorphisms, each with symmetric (negated incr)
+__device__ __noinline__ void CheckStegoPointAll(uint64_t *px, int32_t incr, uint32_t maxFound, uint32_t *out) {
+
+  uint64_t pe1x[4];
+  uint64_t pe2x[4];
+
+  // Check base point (endo=0)
+  CheckStegoPointEndo(px, incr, 0, maxFound, out);
+
+  // Compute endomorphism 1: beta * x mod p
+  _ModMult(pe1x, px, _beta);
+  CheckStegoPointEndo(pe1x, incr, 1, maxFound, out);
+
+  // Compute endomorphism 2: beta^2 * x mod p
+  _ModMult(pe2x, px, _beta2);
+  CheckStegoPointEndo(pe2x, incr, 2, maxFound, out);
+
+  // Check symmetric versions (negated y means negated incr for key recovery)
+  CheckStegoPointEndo(px, -incr, 0, maxFound, out);
+  CheckStegoPointEndo(pe1x, -incr, 1, maxFound, out);
+  CheckStegoPointEndo(pe2x, -incr, 2, maxFound, out);
+}
+
+#define CHECK_STEGO_POINT(_incr) CheckStegoPointAll(px, (_incr), maxFound, out)
 
 __device__ void ComputeKeysStego(uint64_t *startx, uint64_t *starty, uint32_t maxFound, uint32_t *out) {
 
