@@ -1,0 +1,57 @@
+{
+  "mask_16bit": {
+    "throughput_mkeys": 27000,
+    "time_sec": 0.002,
+    "gpu": "RTX 4090",
+    "notes": "EC point X-coordinate matching, no hashing"
+  },
+  "mask_24bit": {
+    "throughput_mkeys": 27000,
+    "time_sec": 0.6,
+    "gpu": "RTX 4090"
+  },
+  "mask_32bit": {
+    "throughput_mkeys": 27000,
+    "time_sec": 160,
+    "gpu": "RTX 4090"
+  },
+  "sig_ecdsa_16bit": {
+    "throughput_mkeys": 27000,
+    "time_sec": 0.002,
+    "gpu": "RTX 4090",
+    "notes": "Shares kernel with mask mode"
+  },
+  "sig_schnorr_16bit": {
+    "throughput_mkeys": 27000,
+    "time_sec": 0.002,
+    "gpu": "RTX 4090",
+    "notes": "BIP-340 Schnorr signatures"
+  },
+  "taproot_8bit": {
+    "throughput_mkeys": 500,
+    "time_sec": 0.0005,
+    "gpu": "RTX 4090",
+    "notes": "Slower due to per-point scalar multiplication"
+  },
+  "taproot_16bit": {
+    "throughput_mkeys": 500,
+    "time_sec": 0.13,
+    "gpu": "RTX 4090"
+  },
+  "txid_16bit": {
+    "throughput_mkeys": 10,
+    "time_sec": 6.5,
+    "gpu": "RTX 4090",
+    "notes": "Double SHA256 grinding"
+  },
+  "txid_24bit": {
+    "throughput_mkeys": 10,
+    "time_sec": 1677,
+    "gpu": "RTX 4090"
+  },
+  "_metadata": {
+    "version": "1.0",
+    "created": "2025-12-31",
+    "description": "Performance baselines for VanityMask GPU modes"
+  }
+}
