@@ -445,6 +445,9 @@ GPUEngine::GPUEngine(int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_
     printf("GPUEngine: Allocate output memory: %s\n", cudaGetErrorString(err));
     return;
   }
+  // Initialize output buffer to zero to prevent garbage results on first Launch* call
+  // This is needed because SetKeys no longer calls callKernel() which would zero this buffer
+  cudaMemset(outputPrefix, 0, outputSize);
   err = cudaHostAlloc(&outputPrefixPinned, outputSize, cudaHostAllocMapped);
   if (err != cudaSuccess) {
     printf("GPUEngine: Allocate output pinned memory: %s\n", cudaGetErrorString(err));
@@ -790,23 +793,23 @@ bool GPUEngine::Launch(std::vector<ITEM> &prefixFound,bool spinWait) {
 void GPUEngine::SetStegoTarget(uint64_t *value, uint64_t *mask) {
 
   cudaError_t err;
-  
+
   // Copy target value to constant memory
   err = cudaMemcpyToSymbol(_stego_value, value, 4 * sizeof(uint64_t));
   if (err != cudaSuccess) {
     printf("GPUEngine: SetStegoTarget value: %s\n", cudaGetErrorString(err));
     return;
   }
-  
+
   // Copy mask to constant memory
   err = cudaMemcpyToSymbol(_stego_mask, mask, 4 * sizeof(uint64_t));
   if (err != cudaSuccess) {
     printf("GPUEngine: SetStegoTarget mask: %s\n", cudaGetErrorString(err));
     return;
   }
-  
+
   stegoMode = true;
-  
+
   err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("GPUEngine: SetStegoTarget: %s\n", cudaGetErrorString(err));
@@ -820,7 +823,7 @@ bool GPUEngine::callKernelStego() {
   cudaMemset(outputPrefix, 0, 4);
 
   // Call steganography kernel
-  comp_keys_stego <<< nbThread / nbThreadPerGroup, nbThreadPerGroup >>> 
+  comp_keys_stego <<< nbThread / nbThreadPerGroup, nbThreadPerGroup >>>
     (inputKey, maxFound, outputPrefix);
 
   cudaError_t err = cudaGetLastError();
@@ -858,6 +861,7 @@ bool GPUEngine::LaunchStego(std::vector<ITEM> &found, bool spinWait) {
 
   // Look for matches found
   uint32_t nbFound = outputPrefixPinned[0];
+
   if (nbFound > maxFound) {
     if (!lostWarning) {
       printf("\nWarning, %d items lost\n", (nbFound - maxFound));
@@ -878,6 +882,7 @@ bool GPUEngine::LaunchStego(std::vector<ITEM> &found, bool spinWait) {
     it.mode = (ptr[0] & 0x8000) != 0;
     it.incr = ptr[1];
     it.hash = (uint8_t *)(itemPtr + 2);
+
     found.push_back(it);
   }
 

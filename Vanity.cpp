@@ -1797,9 +1797,18 @@ void VanitySearch::FindKeyGPU(TH_PARAM *ph) {
           // Add center offset (GPU starts at keys[i] + groupSize/2)
           finalKey.Add((uint64_t)(g.GetGroupSize() / 2));
         } else {
-          // Step 1: Add increment (always the absolute value - the actual offset)
-          int32_t absIncr = (it.incr >= 0) ? it.incr : -it.incr;
-          finalKey.Add((uint64_t)absIncr);
+          // Step 1: Compute key from incr
+          // GPU incr maps to: matched_key = original_keys + incr
+          // But results are processed after keys updated by STEP_SIZE (=groupSize)
+          // So: finalKey = keys + incr - STEP_SIZE = keys + incr - groupSize
+          int32_t groupSize = g.GetGroupSize();
+          if (it.incr >= 0) {
+            finalKey.Add((uint64_t)it.incr);
+          } else {
+            finalKey.Sub((uint64_t)(-it.incr));
+          }
+          // Account for timing: results from previous kernel, keys already advanced
+          finalKey.Sub((uint64_t)groupSize);
         }
 
         // Step 2: Apply endomorphism multiplication
