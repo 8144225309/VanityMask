@@ -118,6 +118,11 @@ VanitySearch::VanitySearch(Secp256K1 *secp, vector<std::string> &inputPrefixes,s
                            bool taprootModeIn)
   :inputPrefixes(inputPrefixes) {
 
+  // Initialize mutex handle to NULL (will be created in Search())
+#ifdef WIN64
+  this->ghMutex = NULL;
+#endif
+
   this->secp = secp;
   this->searchMode = searchMode;
   this->useGpu = useGpu;
@@ -805,7 +810,9 @@ string VanitySearch::GetExpectedTime(double keyRate,double keyCount) {
 void VanitySearch::output(string addr,string pAddr,string pAddrHex) {
 
 #ifdef WIN64
-   WaitForSingleObject(ghMutex,INFINITE);
+  if (ghMutex != NULL) {
+    WaitForSingleObject(ghMutex,INFINITE);
+  }
 #else
   pthread_mutex_lock(&ghMutex);
 #endif
@@ -853,7 +860,9 @@ void VanitySearch::output(string addr,string pAddr,string pAddrHex) {
     fclose(f);
 
 #ifdef WIN64
-  ReleaseMutex(ghMutex);
+  if (ghMutex != NULL) {
+    ReleaseMutex(ghMutex);
+  }
 #else
   pthread_mutex_unlock(&ghMutex);
 #endif
@@ -2098,6 +2107,13 @@ void VanitySearch::Search(int nbThread,std::vector<int> gpuId,std::vector<int> g
   TH_PARAM *params = (TH_PARAM *)malloc((nbCPUThread + nbGPUThread) * sizeof(TH_PARAM));
   memset(params,0,(nbCPUThread + nbGPUThread) * sizeof(TH_PARAM));
 
+  // Initialize mutex ONCE before launching any threads
+#ifdef WIN64
+  ghMutex = CreateMutex(NULL, FALSE, NULL);
+#else
+  ghMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
   // Launch CPU threads
   for (int i = 0; i < nbCPUThread; i++) {
     params[i].obj = this;
@@ -2107,11 +2123,9 @@ void VanitySearch::Search(int nbThread,std::vector<int> gpuId,std::vector<int> g
 #ifdef WIN64
     DWORD thread_id;
     CreateThread(NULL, 0, _FindKey, (void*)(params+i), 0, &thread_id);
-    ghMutex = CreateMutex(NULL, FALSE, NULL);
 #else
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, &_FindKey, (void*)(params+i));
-    ghMutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
   }
 
