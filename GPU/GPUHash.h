@@ -279,17 +279,18 @@ __device__ void SHA256_TapTweak(uint32_t result[8], uint64_t px[4]) {
   // Block 2: px (32 bytes) + padding (32 bytes)
   // Convert px from 4x uint64 (little-endian limbs) to 8x uint32 big-endian words
   // px[3] contains the MSB, px[0] contains the LSB
-  // IMPORTANT: bswap32 IS needed because SHA256 expects message bytes in big-endian order
-  // When we do px[3]>>32, we get a numeric value. Storing it as uint32_t puts bytes in
-  // little-endian order in memory. bswap32 reverses to match Python's to_bytes(32,'big')
-  w[0] = bswap32((uint32_t)(px[3] >> 32));
-  w[1] = bswap32((uint32_t)(px[3]));
-  w[2] = bswap32((uint32_t)(px[2] >> 32));
-  w[3] = bswap32((uint32_t)(px[2]));
-  w[4] = bswap32((uint32_t)(px[1] >> 32));
-  w[5] = bswap32((uint32_t)(px[1]));
-  w[6] = bswap32((uint32_t)(px[0] >> 32));
-  w[7] = bswap32((uint32_t)(px[0]));
+  // NOTE: No bswap needed. px[] stores NUMERIC VALUES, not byte arrays.
+  // px[3] = 0x6037952CB0AFB70A means the value is 0x6037952C...
+  // px[3]>>32 = 0x6037952C is the correct value for SHA256 w[0]
+  // (SHA256 interprets w[0]=0x6037952C as bytes [60,37,95,2C] which matches Python)
+  w[0] = (uint32_t)(px[3] >> 32);
+  w[1] = (uint32_t)(px[3]);
+  w[2] = (uint32_t)(px[2] >> 32);
+  w[3] = (uint32_t)(px[2]);
+  w[4] = (uint32_t)(px[1] >> 32);
+  w[5] = (uint32_t)(px[1]);
+  w[6] = (uint32_t)(px[0] >> 32);
+  w[7] = (uint32_t)(px[0]);
 
   // Padding: 0x80, zeros, then length in bits (96 bytes = 768 bits = 0x300)
   w[8] = 0x80000000U;

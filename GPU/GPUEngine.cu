@@ -711,9 +711,13 @@ bool GPUEngine::SetKeys(Point *p) {
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("GPUEngine: SetKeys: %s\n", cudaGetErrorString(err));
+    return false;
   }
 
-  return callKernel();
+  // Don't call any kernel here - let the caller decide which kernel to launch
+  // The old code called callKernel() which would run the standard vanity kernel
+  // and corrupt the data for taproot/stego modes.
+  return true;
 
 }
 
@@ -956,13 +960,6 @@ bool GPUEngine::LaunchTaproot(std::vector<ITEM> &found, bool spinWait) {
     it.mode = (ptr[0] & 0x8000) != 0;
     it.incr = ptr[1];
     it.hash = (uint8_t *)(itemPtr + 2);
-
-    // Debug: print raw item data and GPU's Q.x
-    printf("\nDEBUG RAW ITEM: itemPtr[0]=%u itemPtr[1]=0x%08x\n", itemPtr[0], itemPtr[1]);
-    printf("  Parsed: tid=%u incr=%d endo=%d mode=%d\n", it.thId, it.incr, it.endo, it.mode?1:0);
-    // GPU's P.x MSB is in itemPtr[2..3], Q.x MSB is in itemPtr[4..5]
-    printf("  GPU P.x MSB: %08X%08X\n", itemPtr[2], itemPtr[3]);
-    printf("  GPU Q.x MSB: %08X%08X\n", itemPtr[4], itemPtr[5]);
 
     found.push_back(it);
   }
