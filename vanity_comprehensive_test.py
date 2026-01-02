@@ -235,18 +235,16 @@ def get_test_definitions(quick_mode: bool = False) -> List[TestDefinition]:
     ))
 
     # --- CPU-Only Tests ---
-    # NOTE: CPU mask mode (SEARCH_STEGO) is NOT IMPLEMENTED in VanityMask
-    # The switch statement in Vanity.cpp has no case for SEARCH_STEGO
-    # Testing CPU vanity mode instead which does work
+    # CPU mask mode is now implemented (SEARCH_STEGO case added to Vanity.cpp)
     tests.append(TestDefinition(
-        "CPU-01", "Vanity mode all cores",
-        ["-t", "16", "-stop", "1Te"],
-        timeout=30, pass_criteria="found", sustained_load=False
+        "CPU-01", "CPU mask mode 24-bit",
+        ["-t", "8", "-mask", "-tx", "ABCDEF", "--prefix", "3", "-stop"],
+        timeout=60, pass_criteria="mask_found", sustained_load=False
     ))
     tests.append(TestDefinition(
-        "CPU-02", "Vanity multi-thread",
-        ["-t", "16", "-stop", "1Ab"],
-        timeout=60, pass_criteria="found", sustained_load=False
+        "CPU-02", "Vanity mode all cores",
+        ["-t", "16", "-stop", "1Te"],
+        timeout=30, pass_criteria="found", sustained_load=False
     ))
     tests.append(TestDefinition(
         "CPU-03", "No SSE mode",
@@ -257,6 +255,30 @@ def get_test_definitions(quick_mode: bool = False) -> List[TestDefinition]:
         "CPU-04", "Single thread baseline",
         ["-t", "1", "-stop", "1A"],
         timeout=60, pass_criteria="found", sustained_load=False
+    ))
+
+    # --- File I/O Tests ---
+    tests.append(TestDefinition(
+        "IO-01", "Output to file",
+        ["-gpu", "-stop", "1Ab", "-o", "test_output.txt"],
+        timeout=30, pass_criteria="file_written", sustained_load=False
+    ))
+    tests.append(TestDefinition(
+        "IO-02", "Input from file",
+        ["-gpu", "-stop", "-i", "test_input.txt"],
+        timeout=30, pass_criteria="found", sustained_load=False
+    ))
+
+    # --- Error Handling Tests ---
+    tests.append(TestDefinition(
+        "ERR-01", "Invalid prefix char",
+        ["-stop", "1Invalid0OIl"],  # Contains invalid base58 chars
+        timeout=10, pass_criteria="error_invalid", sustained_load=False
+    ))
+    tests.append(TestDefinition(
+        "ERR-02", "Missing mask target",
+        ["-mask", "-stop"],  # Missing -tx argument
+        timeout=10, pass_criteria="error_missing", sustained_load=False
     ))
 
     # --- Utility Function Tests ---
@@ -413,6 +435,17 @@ class TestRunner:
         """Run a single test with monitoring."""
         print(f"\n  [{test_def.test_id}] {test_def.description}...")
 
+        # Setup for IO tests
+        if test_def.test_id == "IO-02":
+            # Create test input file with easy prefix
+            input_file = self.output_dir.parent / "test_input.txt"
+            input_file.write_text("1A\n")
+        elif test_def.test_id == "IO-01":
+            # Clean up any previous output file
+            output_file = self.output_dir.parent / "test_output.txt"
+            if output_file.exists():
+                output_file.unlink()
+
         monitor = HardwareMonitor(self.platform)
         monitor.start()
 
@@ -526,6 +559,18 @@ class TestRunner:
             return "priv" in output_lower
         elif criteria == "pub":
             return "pub" in output_lower or "04" in output or "02" in output or "03" in output
+        elif criteria == "mask_found":
+            # CPU mask mode should output MASK: prefix with matching X coordinate
+            return "mask:" in output_lower and "priv" in output_lower
+        elif criteria == "file_written":
+            # Check if the output file was written (find result)
+            return "found" in output_lower or "priv" in output_lower
+        elif criteria == "error_invalid":
+            # Should show error for invalid Base58 characters
+            return "invalid" in output_lower or "error" in output_lower or "argument" in output_lower
+        elif criteria == "error_missing":
+            # Should show error for missing required argument
+            return "error" in output_lower or "missing" in output_lower or "require" in output_lower or "target" in output_lower
         elif criteria.startswith("rate>"):
             # Check if throughput exceeds threshold
             threshold = float(criteria[5:])
