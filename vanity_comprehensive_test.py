@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, asdict
 # CONFIGURATION
 # ==============================================================================
 
-WINDOWS_EXE = r"VanityMask-windows-test\x64\Release\VanitySearch.exe"
+WINDOWS_EXE = r"x64\Release\VanitySearch.exe"
 WSL_EXE = "/mnt/c/pirqjobs/vanitymask-workshop/VanityMask-wsl-test/VanitySearch"
 
 # Test data
@@ -260,7 +260,7 @@ def get_test_definitions(quick_mode: bool = False) -> List[TestDefinition]:
     # --- File I/O Tests ---
     tests.append(TestDefinition(
         "IO-01", "Output to file",
-        ["-gpu", "-stop", "1Ab", "-o", "test_output.txt"],
+        ["-gpu", "-stop", "-o", "test_output.txt", "1Ab"],  # prefix must be last
         timeout=30, pass_criteria="file_written", sustained_load=False
     ))
     tests.append(TestDefinition(
