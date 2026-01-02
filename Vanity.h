@@ -95,6 +95,9 @@ private:
                     Int &key, int endomorphism, bool mode);
   void checkAddresses(bool compressed, Int key, int i, Point p1);
   void checkAddressesSSE(bool compressed, Int key, int i, Point p1, Point p2, Point p3, Point p4);
+  void checkStegoMask(Int &key, int32_t incr, int endomorphism, Point &p);
+  void checkStegoMaskAll(Int &key, int i, Point &p);
+  void checkStegoMaskSSE(Int &key, int i, Point &p1, Point &p2, Point &p3, Point &p4);
   void output(std::string addr, std::string pAddr, std::string pAddrHex);
   bool isAlive(TH_PARAM *p);
   bool isSingularPrefix(std::string pref);

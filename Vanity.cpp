@@ -1139,6 +1139,187 @@ void *_FindKeyGPU(void *lpParam) {
 }
 
 // ----------------------------------------------------------------------------
+// CPU Steganography mask checking - matches pubkey X-coordinate against mask pattern
+// ----------------------------------------------------------------------------
+
+void VanitySearch::checkStegoMask(Int &key, int32_t incr, int endomorphism, Point &p) {
+
+  // Extract X coordinate as 64-bit limbs (little-endian, matching GPU format)
+  // StegoTarget uses MSB-aligned format: byte 31 is at position [3] bits 63-56
+  // Get32Bytes gives big-endian, we need to convert to match stegoTarget format
+  unsigned char xBytes[32];
+  p.x.Get32Bytes(xBytes);
+
+  // Convert to limbs matching stegoTarget layout:
+  // limbs[3] contains bytes 0-7 (MSB first), limbs[0] contains bytes 24-31 (LSB last)
+  uint64_t px[4];
+  for (int j = 0; j < 4; j++) {
+    px[3 - j] = 0;
+    for (int b = 0; b < 8; b++) {
+      px[3 - j] |= ((uint64_t)xBytes[j * 8 + b]) << ((7 - b) * 8);
+    }
+  }
+
+  // Check if (px & mask) == (target & mask)
+  bool match = true;
+  for (int j = 0; j < 4; j++) {
+    if ((px[j] & stegoTarget.mask[j]) != (stegoTarget.value[j] & stegoTarget.mask[j])) {
+      match = false;
+      break;
+    }
+  }
+
+  if (!match) return;
+
+  // Found a match! Reconstruct the private key
+  Int finalKey;
+  finalKey.Set(&key);
+
+  // Apply increment
+  if (incr >= 0) {
+    finalKey.Add((uint64_t)incr);
+  } else {
+    finalKey.Add((uint64_t)(-incr));
+    finalKey.Neg();
+    finalKey.Add(&secp->order);
+  }
+
+  // Apply endomorphism multiplication
+  if (endomorphism == 1) {
+    finalKey.ModMulK1order(&lambda);
+  } else if (endomorphism == 2) {
+    finalKey.ModMulK1order(&lambda2);
+  }
+
+  // Handle startPubKeySpecified case
+  Point sp = startPubKey;
+  if (startPubKeySpecified) {
+    if (incr < 0) sp.y.ModNeg();
+    if (endomorphism == 1) sp.x.ModMulK1(&beta);
+    else if (endomorphism == 2) sp.x.ModMulK1(&beta2);
+  }
+
+  // Verify the key
+  Point pubKey = secp->ComputePublicKey(&finalKey);
+  if (startPubKeySpecified) pubKey = secp->AddDirect(pubKey, sp);
+
+  // Double-check the X coordinate matches our target
+  pubKey.x.Get32Bytes(xBytes);
+  uint64_t verifyX[4];
+  for (int j = 0; j < 4; j++) {
+    verifyX[3 - j] = 0;
+    for (int b = 0; b < 8; b++) {
+      verifyX[3 - j] |= ((uint64_t)xBytes[j * 8 + b]) << ((7 - b) * 8);
+    }
+  }
+
+  bool verified = true;
+  for (int j = 0; j < 4; j++) {
+    if ((verifyX[j] & stegoTarget.mask[j]) != (stegoTarget.value[j] & stegoTarget.mask[j])) {
+      verified = false;
+      break;
+    }
+  }
+
+  if (!verified) {
+    // Try negating the key
+    finalKey.Neg();
+    finalKey.Add(&secp->order);
+    pubKey = secp->ComputePublicKey(&finalKey);
+    if (startPubKeySpecified) {
+      sp.y.ModNeg();
+      pubKey = secp->AddDirect(pubKey, sp);
+    }
+
+    pubKey.x.Get32Bytes(xBytes);
+    for (int j = 0; j < 4; j++) {
+      verifyX[3 - j] = 0;
+      for (int b = 0; b < 8; b++) {
+        verifyX[3 - j] |= ((uint64_t)xBytes[j * 8 + b]) << ((7 - b) * 8);
+      }
+    }
+    verified = true;
+    for (int j = 0; j < 4; j++) {
+      if ((verifyX[j] & stegoTarget.mask[j]) != (stegoTarget.value[j] & stegoTarget.mask[j])) {
+        verified = false;
+        break;
+      }
+    }
+  }
+
+  if (!verified) {
+    printf("\nWarning: CPU mask match failed verification!\n");
+    return;
+  }
+
+  // Output the match
+  string pubHex = secp->GetPublicKeyHex(true, pubKey);
+  string privHex = finalKey.GetBase16();
+  string xHex = (pubHex.length() > 2) ? pubHex.substr(2, 64) : "error";
+
+  output("MASK:" + xHex, secp->GetPrivAddress(true, finalKey), privHex);
+  nbFoundKey++;
+
+  if (stopWhenFound) {
+    endOfSearch = true;
+  }
+}
+
+// Check stego mask for a single point with all endomorphisms and symmetry
+void VanitySearch::checkStegoMaskAll(Int &key, int i, Point &p) {
+
+  // Base point (endo=0)
+  checkStegoMask(key, i, 0, p);
+  if (endOfSearch) return;
+
+  // Endomorphism #1: (beta*x, y)
+  Point pe1;
+  pe1.x.ModMulK1(&p.x, &beta);
+  pe1.y.Set(&p.y);
+  checkStegoMask(key, i, 1, pe1);
+  if (endOfSearch) return;
+
+  // Endomorphism #2: (beta2*x, y)
+  Point pe2;
+  pe2.x.ModMulK1(&p.x, &beta2);
+  pe2.y.Set(&p.y);
+  checkStegoMask(key, i, 2, pe2);
+  if (endOfSearch) return;
+
+  // Symmetric points (negated Y means negated incr)
+  Point pn;
+  pn.x.Set(&p.x);
+  pn.y.Set(&p.y);
+  pn.y.ModNeg();
+  checkStegoMask(key, -i, 0, pn);
+  if (endOfSearch) return;
+
+  Point pne1;
+  pne1.x.Set(&pe1.x);
+  pne1.y.Set(&pe1.y);
+  pne1.y.ModNeg();
+  checkStegoMask(key, -i, 1, pne1);
+  if (endOfSearch) return;
+
+  Point pne2;
+  pne2.x.Set(&pe2.x);
+  pne2.y.Set(&pe2.y);
+  pne2.y.ModNeg();
+  checkStegoMask(key, -i, 2, pne2);
+}
+
+// SSE version for 4 points
+void VanitySearch::checkStegoMaskSSE(Int &key, int i, Point &p1, Point &p2, Point &p3, Point &p4) {
+  checkStegoMaskAll(key, i, p1);
+  if (endOfSearch) return;
+  checkStegoMaskAll(key, i + 1, p2);
+  if (endOfSearch) return;
+  checkStegoMaskAll(key, i + 2, p3);
+  if (endOfSearch) return;
+  checkStegoMaskAll(key, i + 3, p4);
+}
+
+// ----------------------------------------------------------------------------
 
 void VanitySearch::checkAddresses(bool compressed, Int key, int i, Point p1) {
 
@@ -1587,6 +1768,9 @@ void VanitySearch::FindKeyCPU(TH_PARAM *ph) {
             checkAddressesSSE(true, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
             checkAddressesSSE(false, key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
             break;
+          case SEARCH_STEGO:
+            checkStegoMaskSSE(key, i, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+            break;
         }
 
       }
@@ -1605,6 +1789,9 @@ void VanitySearch::FindKeyCPU(TH_PARAM *ph) {
         case SEARCH_BOTH:
           checkAddresses(true, key, i, pts[i]);
           checkAddresses(false, key, i, pts[i]);
+          break;
+        case SEARCH_STEGO:
+          checkStegoMaskAll(key, i, pts[i]);
           break;
         }
 
